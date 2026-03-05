@@ -95,158 +95,186 @@ export function normalize(issue: JiraIssue, baseUrl: string): Task {
   }
 }
 
+// --- API helpers ---
+
+export async function transitionIssue(
+  baseUrl: string,
+  headers: Record<string, string>,
+  issueId: string,
+  transitionName: string
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
+      {
+        method: "GET",
+        headers,
+        signal: AbortSignal.timeout(15_000),
+      }
+    )
+
+    if (!res.ok) {
+      console.warn(
+        `Failed to fetch transitions for ${issueId}: ${res.status} ${res.statusText}`
+      )
+      return
+    }
+
+    const data: { transitions: { id: string; name: string }[] } =
+      await res.json()
+
+    const match = data.transitions.find(
+      (t) => t.name.toLowerCase() === transitionName.toLowerCase()
+    )
+
+    if (!match) {
+      console.warn(
+        `Transition "${transitionName}" not found for issue ${issueId}. ` +
+          `Available: ${data.transitions.map((t) => t.name).join(", ")}`
+      )
+      return
+    }
+
+    const postRes = await fetch(
+      `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ transition: { id: match.id } }),
+        signal: AbortSignal.timeout(15_000),
+      }
+    )
+
+    if (!postRes.ok) {
+      console.warn(
+        `Failed to transition ${issueId} to "${transitionName}": ${postRes.status} ${postRes.statusText}`
+      )
+    }
+  } catch (err) {
+    console.warn(`Error transitioning issue ${issueId}:`, err)
+  }
+}
+
+export async function addComment(
+  baseUrl: string,
+  headers: Record<string, string>,
+  issueId: string,
+  body: string
+): Promise<void> {
+  try {
+    const res = await fetch(
+      `${baseUrl}/rest/api/2/issue/${issueId}/comment`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ body }),
+        signal: AbortSignal.timeout(15_000),
+      }
+    )
+
+    if (!res.ok) {
+      console.warn(
+        `Failed to add comment to ${issueId}: ${res.status} ${res.statusText}`
+      )
+    }
+  } catch (err) {
+    console.warn(`Error adding comment to issue ${issueId}:`, err)
+  }
+}
+
+export async function* fetchIssues(
+  baseUrl: string,
+  headers: Record<string, string>,
+  jql: string
+): AsyncGenerator<Task> {
+  let startAt = 0
+
+  while (true) {
+    const response = await fetch(`${baseUrl}/rest/api/2/search`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jql,
+        startAt,
+        maxResults: 10,
+        fields: ["summary", "description", "priority", "comment"],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    })
+
+    if (!response.ok) {
+      throw new Error(
+        `Jira search failed: ${response.status} ${response.statusText}`
+      )
+    }
+
+    const data: JiraSearchResponse = await response.json()
+
+    if (data.issues.length === 0) break
+
+    for (const issue of data.issues) {
+      yield normalize(issue, baseUrl)
+    }
+
+    startAt += data.issues.length
+    if (startAt >= data.total) break
+  }
+}
+
+export async function putResults(
+  baseUrl: string,
+  headers: Record<string, string>,
+  task: Task,
+  context: PutContext
+): Promise<void> {
+  const workLogPath = join(task.results!.logDir, "work.md.log")
+  let summary: string
+
+  try {
+    const workLog = readFileSync(workLogPath, "utf-8")
+    summary = await context.summarize(workLog)
+  } catch {
+    summary = "(no work log available)"
+  }
+
+  // Append PR link if the teardown agent created one
+  const prUrl = context.output.pr_url
+  if (prUrl) {
+    summary += `\n\nPull request: ${prUrl}`
+  }
+
+  if (task.results?.status === "complete") {
+    await transitionIssue(
+      baseUrl,
+      headers,
+      task.id,
+      process.env.JIRA_DONE_TRANSITION ?? "Done"
+    )
+    await addComment(baseUrl, headers, task.id, summary)
+  } else {
+    await addComment(baseUrl, headers, task.id, `Dispatch failed:\n\n${summary}`)
+  }
+}
+
+export function buildHeaders(token: string): Record<string, string> {
+  return {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  }
+}
+
 // --- Watcher factory ---
 
 export default function createWatcher(_config: SwitchboardConfig): Watcher {
   const baseUrl = requireEnv("JIRA_BASE_URL")
   const token = requireEnv("JIRA_TOKEN")
   const jql = requireEnv("JIRA_JQL")
-
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  }
-
-  async function transitionIssue(
-    issueId: string,
-    transitionName: string
-  ): Promise<void> {
-    try {
-      const res = await fetch(
-        `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
-        {
-          method: "GET",
-          headers,
-          signal: AbortSignal.timeout(15_000),
-        }
-      )
-
-      if (!res.ok) {
-        console.warn(
-          `Failed to fetch transitions for ${issueId}: ${res.status} ${res.statusText}`
-        )
-        return
-      }
-
-      const data: { transitions: { id: string; name: string }[] } =
-        await res.json()
-
-      const match = data.transitions.find(
-        (t) => t.name.toLowerCase() === transitionName.toLowerCase()
-      )
-
-      if (!match) {
-        console.warn(
-          `Transition "${transitionName}" not found for issue ${issueId}. ` +
-            `Available: ${data.transitions.map((t) => t.name).join(", ")}`
-        )
-        return
-      }
-
-      const postRes = await fetch(
-        `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ transition: { id: match.id } }),
-          signal: AbortSignal.timeout(15_000),
-        }
-      )
-
-      if (!postRes.ok) {
-        console.warn(
-          `Failed to transition ${issueId} to "${transitionName}": ${postRes.status} ${postRes.statusText}`
-        )
-      }
-    } catch (err) {
-      console.warn(`Error transitioning issue ${issueId}:`, err)
-    }
-  }
-
-  async function addComment(issueId: string, body: string): Promise<void> {
-    try {
-      const res = await fetch(
-        `${baseUrl}/rest/api/2/issue/${issueId}/comment`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ body }),
-          signal: AbortSignal.timeout(15_000),
-        }
-      )
-
-      if (!res.ok) {
-        console.warn(
-          `Failed to add comment to ${issueId}: ${res.status} ${res.statusText}`
-        )
-      }
-    } catch (err) {
-      console.warn(`Error adding comment to issue ${issueId}:`, err)
-    }
-  }
+  const headers = buildHeaders(token)
 
   return {
-    async *fetch() {
-      let startAt = 0
+    fetch: () => fetchIssues(baseUrl, headers, jql),
 
-      while (true) {
-        const response = await fetch(`${baseUrl}/rest/api/2/search`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            jql,
-            startAt,
-            maxResults: 10,
-            fields: ["summary", "description", "priority", "comment"],
-          }),
-          signal: AbortSignal.timeout(15_000),
-        })
-
-        if (!response.ok) {
-          throw new Error(
-            `Jira search failed: ${response.status} ${response.statusText}`
-          )
-        }
-
-        const data: JiraSearchResponse = await response.json()
-
-        if (data.issues.length === 0) break
-
-        for (const issue of data.issues) {
-          yield normalize(issue, baseUrl)
-        }
-
-        startAt += data.issues.length
-        if (startAt >= data.total) break
-      }
-    },
-
-    async put(task: Task, context: PutContext): Promise<void> {
-      const workLogPath = join(task.results!.logDir, "work.md.log")
-      let summary: string
-
-      try {
-        const workLog = readFileSync(workLogPath, "utf-8")
-        summary = await context.summarize(workLog)
-      } catch {
-        summary = "(no work log available)"
-      }
-
-      // Append PR link if the teardown agent created one
-      const prUrl = context.output.pr_url
-      if (prUrl) {
-        summary += `\n\nPull request: ${prUrl}`
-      }
-
-      if (task.results?.status === "complete") {
-        await transitionIssue(
-          task.id,
-          process.env.JIRA_DONE_TRANSITION ?? "Done"
-        )
-        await addComment(task.id, summary)
-      } else {
-        await addComment(task.id, `Dispatch failed:\n\n${summary}`)
-      }
-    },
+    put: (task: Task, context: PutContext) =>
+      putResults(baseUrl, headers, task, context),
   }
 }

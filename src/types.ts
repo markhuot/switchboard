@@ -123,6 +123,30 @@ export interface Watcher {
   put?(task: Task, context: PutContext): Promise<void>
 }
 
+/**
+ * Context passed to watcher factory functions, providing access to
+ * built-in watchers and shared infrastructure. This allows external
+ * watcher modules (loaded via --watch=./path.ts) to delegate to or
+ * wrap built-in watchers without importing from the switchboard source.
+ */
+export interface WatcherFactoryContext {
+  /**
+   * Instantiate a built-in watcher by name. The returned watcher is
+   * fully constructed and ready to use — its fetch() and put() methods
+   * work the same as if it were loaded directly via --watch=<name>.
+   *
+   * Useful for external watcher modules that want to wrap or extend a
+   * built-in watcher (e.g. providing opinionated defaults on top of
+   * the jira watcher).
+   *
+   * An optional `env` map can supply or override environment variables
+   * that the built-in watcher reads during construction. The overrides
+   * are applied before the factory runs and restored afterward, so the
+   * caller does not need to mutate process.env directly.
+   */
+  createWatcher(name: string, env?: Record<string, string>): Promise<Watcher>
+}
+
 export interface DispatchHandle {
   /** PID of the spawned subprocess. */
   pid: number
