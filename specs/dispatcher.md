@@ -398,6 +398,26 @@ If work succeeded but teardown failed, the task is still marked failed. The work
 | Teardown | Log error | N/A | Failed |
 | All succeed | -- | -- | Complete |
 
+## Task Revisions (Re-dispatch)
+
+A task may be dispatched more than once. A common flow:
+
+1. Task arrives ("fix ABC"), Switchboard dispatches it.
+2. The agent works, creates a PR, and the watcher marks the task as done.
+3. A reviewer finds an issue and moves the task back to "To-do" with an updated description ("fix ABC, but don't change XYZ").
+4. The watcher yields the task again on the next poll cycle. Same ID, same key, revised context.
+5. Switchboard dispatches it again.
+
+This works because:
+
+- **Lock store has no memory of completed tasks.** When a dispatch finishes, the lock is released. There is no "completed" state. Re-pickup is controlled entirely by whether the watcher re-yields the task.
+- **Init reuses the existing branch.** The default `init.sh` checks for an existing `switchboard/{identifier}` branch and creates a worktree from it rather than starting fresh. The agent picks up where the previous work left off.
+- **Teardown handles existing PRs.** The default `teardown.md` instructs the agent to check for an existing PR on the branch before creating one. If a PR exists, the agent pushes new commits and updates the PR description. If not, it creates a new PR.
+- **The watcher controls re-yield.** For Jira, the JQL query determines which tasks are candidates. If a reviewer moves a ticket back to "To-do", the JQL matches it again. For the file watcher, the task would need to be removed from the completed file or re-added to the source file.
+- **Fresh task description.** The watcher fetches the task from the source on each poll, so the agent receives the updated description with reviewer feedback.
+
+Each dispatch attempt gets its own dispatch ID and log directory, so logs from the original attempt and the revision never collide.
+
 ## DispatchHandle
 
 The existing `DispatchHandle` interface remains unchanged:
@@ -452,13 +472,18 @@ project.
 #!/bin/bash
 set -euo pipefail
 
-# Push the branch and open a PR
+# Push the branch
 git push -u origin "switchboard/$TASK_IDENTIFIER"
 
-gh pr create \
-  --title "$TASK_IDENTIFIER: $TASK_TITLE" \
-  --body "Automated PR for $TASK_URL" \
-  --base main
+# Open a PR if one doesn't already exist for this branch.
+# If a PR exists (e.g., from a previous dispatch), the push above
+# already updated it with the new commits.
+if ! gh pr view "switchboard/$TASK_IDENTIFIER" --json url >/dev/null 2>&1; then
+  gh pr create \
+    --title "$TASK_IDENTIFIER: $TASK_TITLE" \
+    --body "Automated PR for $TASK_URL" \
+    --base main
+fi
 
 # Clean up the worktree
 WORKSPACE="$SWITCHBOARD_PROJECT_ROOT/.switchboard/workspaces/$TASK_IDENTIFIER"

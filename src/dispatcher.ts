@@ -105,23 +105,41 @@ Work on this task until it is complete.
 
 export const DEFAULT_TEARDOWN_MD = `# Teardown: {{task.identifier}}: {{task.title}}
 
-You are reviewing completed work for this task. Your job is to determine if the
-work is ready for human review and, if so, open a pull request.
+You are packaging completed work for human review. Your job is to commit any
+outstanding changes, push the branch, and open or update a pull request.
 
 ## Instructions
 
-1. Review the changes on the current branch using \`git log\` and \`git diff main\`
+1. **Commit any uncommitted work.** If there are staged, unstaged, or untracked
+   files, commit them. This is your primary responsibility — the branch is the
+   artifact of the work phase and everything in the working tree should be
+   captured. Use \`git add -A && git commit\` with a descriptive message. It is
+   fine to commit work-in-progress; the point is to preserve it for review.
+
+2. Review the changes on the current branch using \`git log\` and \`git diff main\`
    to understand what was accomplished.
 
-2. If there are meaningful commits that would benefit from human review — even if
-   the work is not fully complete — open a pull request:
+3. If there are meaningful commits that would benefit from human review — even if
+   the work is not fully complete — push the branch and open or update a pull request:
 
    a. Push the branch to the remote:
       \`\`\`
       git push -u origin "switchboard/{{task.identifier}}"
       \`\`\`
 
-   b. Create a pull request with a clear, descriptive summary of the changes:
+   b. Check if a pull request already exists for this branch:
+      \`\`\`
+      gh pr view "switchboard/{{task.identifier}}" --json url --jq '.url'
+      \`\`\`
+
+   c. If a PR already exists, update its body with a summary of the latest changes.
+      Include a section describing what changed in this revision:
+      \`\`\`
+      gh pr edit "switchboard/{{task.identifier}}" \\
+        --body "<updated description including latest changes>"
+      \`\`\`
+
+   d. If no PR exists, create one with a clear, descriptive summary of the changes:
       \`\`\`
       gh pr create \\
         --title "{{task.identifier}}: {{task.title}}" \\
@@ -129,14 +147,14 @@ work is ready for human review and, if so, open a pull request.
         --base main
       \`\`\`
 
-   c. After creating the PR, include the following directive on its own line in
-      your response (this is how Switchboard captures the PR URL):
+   e. After creating or updating the PR, include the following directive on its own
+      line in your response (this is how Switchboard captures the PR URL):
       \`\`\`
       ##switchboard:pr_url=<the PR URL>
       \`\`\`
 
-3. If there are no meaningful changes (e.g., the branch has no new commits ahead
-   of main), skip PR creation.
+4. If there are no meaningful changes (e.g., the branch has no new commits ahead
+   of main and no uncommitted changes), skip PR creation.
 `
 
 // ---------------------------------------------------------------------------
