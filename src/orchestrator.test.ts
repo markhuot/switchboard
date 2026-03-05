@@ -765,3 +765,110 @@ describe("createOrchestrator writeback", () => {
     stop()
   })
 })
+
+// --- cross-poll-cycle re-dispatch regression test ---
+
+describe("cross-poll-cycle deduplication", () => {
+  test("does not re-dispatch in-flight tasks on subsequent poll cycles", async () => {
+    const dispatchCounts = new Map<string, number>()
+    const resolvers = new Map<string, () => void>()
+    let fakePid = 50000
+
+    // Dispatcher that never resolves (tasks stay in-flight) and counts calls per task ID
+    const dispatch: Dispatcher = (task, dispatchId) => {
+      dispatchCounts.set(task.id, (dispatchCounts.get(task.id) ?? 0) + 1)
+      const done = new Promise<StepResult[]>((resolve) => {
+        resolvers.set(task.id, () => resolve([]))
+      })
+      return { pid: ++fakePid, dispatchId, logDir: `/tmp/test-logs/${task.id}`, done, output: {} }
+    }
+
+    // Watcher that re-yields the same task on every fetch() call,
+    // simulating a file watcher re-reading the full task list each poll cycle.
+    let fetchCount = 0
+    const watcher: Watcher = {
+      async *fetch() {
+        fetchCount++
+        yield makeTask({ id: "slow-task", title: "Long-running task" })
+      },
+    }
+
+    const orchestrator = createOrchestrator(
+      { ...defaultConfig, waitBetweenPolls: 10 },
+      watcher,
+      dispatch,
+    )
+
+    const stop = orchestrator.start()
+
+    // Wait long enough for several poll cycles to complete
+    await new Promise((r) => setTimeout(r, 200))
+
+    // Multiple poll cycles should have occurred
+    expect(fetchCount).toBeGreaterThanOrEqual(3)
+
+    // But the task should have been dispatched exactly once
+    expect(dispatchCounts.get("slow-task")).toBe(1)
+    expect(orchestrator.inFlight.size).toBe(1)
+    expect(orchestrator.inFlight.has("slow-task")).toBe(true)
+
+    // Clean up
+    const resolve = resolvers.get("slow-task")
+    if (resolve) resolve()
+    stop()
+  })
+
+  test("does not re-dispatch in-flight tasks across polls with lock store", async () => {
+    const dispatchCounts = new Map<string, number>()
+    const resolvers = new Map<string, () => void>()
+    let fakePid = 50000
+
+    const dispatch: Dispatcher = (task, dispatchId) => {
+      dispatchCounts.set(task.id, (dispatchCounts.get(task.id) ?? 0) + 1)
+      const done = new Promise<StepResult[]>((resolve) => {
+        resolvers.set(task.id, () => resolve([]))
+      })
+      return { pid: ++fakePid, dispatchId, logDir: `/tmp/test-logs/${task.id}`, done, output: {} }
+    }
+
+    let fetchCount = 0
+    const watcher: Watcher = {
+      async *fetch() {
+        fetchCount++
+        yield makeTask({ id: "locked-task", title: "Locked long-running task" })
+      },
+    }
+
+    // Lock store that allows the first acquire and rejects subsequent ones
+    // (simulating the real lock store behavior for an already-locked task)
+    const acquired = new Set<string>()
+    const lockStore: LockStore = {
+      async acquire(taskId, _meta) {
+        if (acquired.has(taskId)) return false
+        acquired.add(taskId)
+        return true
+      },
+      async release(taskId) {
+        acquired.delete(taskId)
+      },
+    }
+
+    const orchestrator = createOrchestrator(
+      { ...defaultConfig, waitBetweenPolls: 10 },
+      watcher,
+      dispatch,
+      lockStore,
+    )
+
+    const stop = orchestrator.start()
+    await new Promise((r) => setTimeout(r, 200))
+
+    expect(fetchCount).toBeGreaterThanOrEqual(3)
+    expect(dispatchCounts.get("locked-task")).toBe(1)
+    expect(orchestrator.inFlight.size).toBe(1)
+
+    const resolve = resolvers.get("locked-task")
+    if (resolve) resolve()
+    stop()
+  })
+})

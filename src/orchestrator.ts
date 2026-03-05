@@ -146,6 +146,9 @@ export function createOrchestrator(
           // Validate
           if (!task.id || !task.title) continue
 
+          // Skip tasks already being processed
+          if (inFlight.has(task.id)) continue
+
            // Wait for a concurrency slot
           await waitForSlot()
           if (stopped) return
