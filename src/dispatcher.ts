@@ -19,6 +19,10 @@ if [ -d "$WORKSPACE" ]; then
   exit 0
 fi
 
+# Clean up any stale worktree references (e.g. a previous run's directory
+# was removed but the git worktree entry was never pruned).
+git worktree prune
+
 # If the branch already exists, create a worktree from it (continuing
 # previous work). Otherwise create a fresh branch.
 if git show-ref --verify --quiet "refs/heads/switchboard/$TASK_IDENTIFIER"; then
@@ -68,8 +72,21 @@ case "$AGENT" in
     gh copilot --prompt "$(cat "$PROMPT_FILE")"
     ;;
   dummy)
-    # No-cost test agent that just sleeps for a random 4-15 seconds
-    sleep $(( RANDOM % 12 + 4 ))
+    # No-cost test agent that sleeps for a random duration.
+    # Configure with DUMMY_SLEEP_DURATION="2s-10s" (default 4s-15s).
+    # Supports s (seconds), m (minutes), h (hours) suffixes.
+    _to_sec() {
+      local _v="\${1%[smh]}"
+      case "$1" in
+        *h) echo $(( _v * 3600 )) ;;
+        *m) echo $(( _v * 60 )) ;;
+        *)  echo $(( _v )) ;;
+      esac
+    }
+    _dur="\${DUMMY_SLEEP_DURATION:-4s-15s}"
+    _min=$(_to_sec "\${_dur%-*}")
+    _max=$(_to_sec "\${_dur#*-}")
+    sleep $(( RANDOM % (_max - _min + 1) + _min ))
     ;;
   *)
     # Unknown agent -- treat the value as a command and pass the prompt
@@ -399,8 +416,7 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
   const watcherName = normalizeWatcherName(config.watch)
   const commands = resolveCommands(config.dispatch, root)
 
-  return (task: Task): DispatchHandle => {
-    const dispatchId = generateDispatchId()
+  return (task: Task, dispatchId: string): DispatchHandle => {
     const identifier = task.identifier ?? task.id
     const logDir = join(root, ".switchboard/logs", watcherName, identifier, dispatchId)
     mkdirSync(logDir, { recursive: true })

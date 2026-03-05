@@ -289,7 +289,7 @@ describe("createDispatcher", () => {
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -313,7 +313,7 @@ describe("createDispatcher", () => {
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     // Wait briefly for the first subprocess to spawn
     await new Promise((r) => setTimeout(r, 50))
@@ -340,7 +340,7 @@ describe("createDispatcher", () => {
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -385,7 +385,7 @@ describe("createDispatcher", () => {
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -412,7 +412,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -445,7 +445,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await expect(handle.done).rejects.toThrow()
 
@@ -472,7 +472,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await expect(handle.done).rejects.toThrow()
 
@@ -496,7 +496,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await expect(handle.done).rejects.toThrow("teardown")
   })
@@ -518,7 +518,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
     // Should complete without error
@@ -546,7 +546,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -578,7 +578,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -603,7 +603,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -627,7 +627,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -653,7 +653,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await expect(handle.done).rejects.toThrow()
 
@@ -678,7 +678,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -711,7 +711,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const config = makeConfig()
     const dispatch = createDispatcher({ config, projectRoot })
-    const handle = dispatch(task)
+    const handle = dispatch(task, "a1b2c3d4")
 
     await handle.done
 
@@ -729,7 +729,7 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
       // Do NOT create commandsDir — defaults should be used
       const config = makeConfig({ dispatch: isolatedCommandsDir })
       const dispatch = createDispatcher({ config, projectRoot: isolatedRoot })
-      const handle = dispatch(task)
+      const handle = dispatch(task, "a1b2c3d4")
 
       // Default init.sh will fail because isolatedRoot isn't a git repo
       await expect(handle.done).rejects.toThrow()

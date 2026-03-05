@@ -1,4 +1,5 @@
 import type { Dispatcher, LockStore, PutContext, StepResult, SwitchboardConfig, Task, TaskResults, Watcher } from "./types"
+import { generateDispatchId } from "./dispatcher"
 
 export type TaskStatus = "in_progress" | "complete" | "error"
 
@@ -145,18 +146,19 @@ export function createOrchestrator(
           // Validate
           if (!task.id || !task.title) continue
 
-          // Wait for a concurrency slot
+           // Wait for a concurrency slot
           await waitForSlot()
           if (stopped) return
 
-          // Dispatch -- the dispatcher generates its own dispatch ID
-          const handle = dispatch(task)
+          // Generate the dispatch ID upfront so we can acquire the lock
+          // before spawning any subprocess.
+          const dispatchId = generateDispatchId()
 
           // Authoritative check: acquire persistent lock (if lock store provided)
           if (lockStore) {
             try {
               const acquired = await lockStore.acquire(task.id, {
-                dispatchId: handle.dispatchId,
+                dispatchId,
               })
               if (!acquired) continue
             } catch {
@@ -165,7 +167,12 @@ export function createOrchestrator(
             }
           }
 
+          // Track before dispatching so subsequent yields of the same
+          // task ID within this poll pass are naturally skipped by the
+          // lock store (cross-process) or waitForSlot accounting.
           inFlight.add(task.id)
+
+          const handle = dispatch(task, dispatchId)
           emit(task, "in_progress", handle.pid)
           handle.done
             .then(async (steps) => {

@@ -8,7 +8,7 @@ import createJiraWatcher, {
   buildDescription,
   normalize,
 } from "./watchers/jira"
-import type { Task, Watcher, SwitchboardConfig, Dispatcher } from "./types"
+import type { Task, Watcher, SwitchboardConfig, Dispatcher, StepResult } from "./types"
 import os from "os"
 import { mkdirSync, writeFileSync } from "fs"
 
@@ -381,9 +381,9 @@ describe("createOrchestrator", () => {
   /** Dispatch that never resolves — tasks stay in-flight for the test's lifetime. */
   function controllableDispatch() {
     const resolvers = new Map<string, () => void>()
-    const dispatch: Dispatcher = (task) => {
-      const done = new Promise<void>((resolve) => { resolvers.set(task.id, resolve) })
-      return { pid: ++fakePid, done }
+    const dispatch: Dispatcher = (task, dispatchId) => {
+      const done = new Promise<StepResult[]>((resolve) => { resolvers.set(task.id, () => resolve([])) })
+      return { pid: ++fakePid, dispatchId, logDir: "/tmp/test-logs", output: {}, done }
     }
     return {
       dispatch,
@@ -394,7 +394,7 @@ describe("createOrchestrator", () => {
     }
   }
 
-  const instantDispatch: Dispatcher = () => ({ pid: ++fakePid, done: Promise.resolve() })
+  const instantDispatch: Dispatcher = (_task, dispatchId) => ({ pid: ++fakePid, dispatchId, logDir: "/tmp/test-logs", output: {}, done: Promise.resolve([]) })
 
   function createMockWatcher(tasks: Task[]): Watcher {
     return {

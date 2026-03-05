@@ -7,16 +7,16 @@ import type { Dispatcher, DispatchHandle, LockStore, StepResult, Task, PutContex
 let fakePid = 90000
 
 /** Dispatch that resolves instantly. */
-const instantDispatch: Dispatcher = () => {
-  return { pid: ++fakePid, done: Promise.resolve(), output: {} }
+const instantDispatch: Dispatcher = (_task, dispatchId) => {
+  return { pid: ++fakePid, dispatchId, logDir: `/tmp/test-logs`, done: Promise.resolve([]), output: {} }
 }
 
 /** Dispatch that never resolves (tasks stay in-flight for the test's lifetime). */
 function hangingDispatch(): { dispatch: Dispatcher; resolve: () => void } {
   let resolver: () => void
-  const gate = new Promise<void>((r) => { resolver = r })
+  const gate = new Promise<StepResult[]>((r) => { resolver = () => r([]) })
   return {
-    dispatch: () => ({ pid: ++fakePid, done: gate, output: {} }),
+    dispatch: (_task, dispatchId) => ({ pid: ++fakePid, dispatchId, logDir: `/tmp/test-logs`, done: gate, output: {} }),
     resolve: () => resolver(),
   }
 }
@@ -27,11 +27,11 @@ function hangingDispatch(): { dispatch: Dispatcher; resolve: () => void } {
 function controllableDispatch() {
   const resolvers: Map<string, () => void> = new Map()
 
-  const dispatch: Dispatcher = (task) => {
-    const done = new Promise<void>((resolve) => {
-      resolvers.set(task.id, resolve)
+  const dispatch: Dispatcher = (task, dispatchId) => {
+    const done = new Promise<StepResult[]>((resolve) => {
+      resolvers.set(task.id, () => resolve([]))
     })
-    return { pid: ++fakePid, done, output: {} }
+    return { pid: ++fakePid, dispatchId, logDir: `/tmp/test-logs/${task.id}`, done, output: {} }
   }
 
   return {
@@ -95,8 +95,7 @@ describe("createOrchestrator", () => {
     const resolvers = new Map<string, (steps: StepResult[]) => void>()
     let fakePid = 80000
 
-    const dispatch: Dispatcher = (task) => {
-      const dispatchId = `test-${task.id}`
+    const dispatch: Dispatcher = (task, _dispatchId) => {      const dispatchId = `test-${task.id}`
       const logDir = `/tmp/test-logs/${task.id}`
       const done = new Promise<StepResult[]>((resolve) => {
         resolvers.set(task.id, resolve)
@@ -457,8 +456,7 @@ function newControllableDispatch() {
   const rejecters = new Map<string, (err: Error) => void>()
   let fakePid = 70000
 
-  const dispatch: Dispatcher = (task) => {
-    const dispatchId = `test-${task.id}`
+  const dispatch: Dispatcher = (task, dispatchId) => {
     const logDir = `/tmp/test-logs/${task.id}`
     const done = new Promise<StepResult[]>((resolve, reject) => {
       resolvers.set(task.id, resolve)
@@ -482,9 +480,9 @@ function newControllableDispatch() {
 
 function newInstantDispatch(): Dispatcher {
   let fakePid = 60000
-  return (task) => ({
+  return (task, dispatchId) => ({
     pid: ++fakePid,
-    dispatchId: `instant-${task.id}`,
+    dispatchId,
     logDir: `/tmp/test-logs/${task.id}`,
     done: Promise.resolve([]),
     output: {},
@@ -542,7 +540,8 @@ describe("createOrchestrator lock store", () => {
 
     expect(lockStore.acquireCalls).toHaveLength(1)
     expect(lockStore.acquireCalls[0].taskId).toBe("abc")
-    expect(lockStore.acquireCalls[0].meta.dispatchId).toBe("test-abc")
+    // dispatchId is now a pre-generated 8-char hex string
+    expect(lockStore.acquireCalls[0].meta.dispatchId).toMatch(/^[0-9a-f]{8}$/)
 
     complete("abc")
     stop()
@@ -652,7 +651,7 @@ describe("createOrchestrator writeback", () => {
     expect(putCalls[0].id).toBe("wb1")
     expect(putCalls[0].results).toBeDefined()
     expect(putCalls[0].results!.status).toBe("complete")
-    expect(putCalls[0].results!.dispatchId).toBe("test-wb1")
+    expect(putCalls[0].results!.dispatchId).toMatch(/^[0-9a-f]{8}$/)
     expect(putCalls[0].results!.logDir).toBe("/tmp/test-logs/wb1")
     expect(putCalls[0].results!.steps).toEqual([{ name: "init.sh", exitCode: 0 }])
 
@@ -682,7 +681,7 @@ describe("createOrchestrator writeback", () => {
     expect(putCalls[0].id).toBe("fail1")
     expect(putCalls[0].results).toBeDefined()
     expect(putCalls[0].results!.status).toBe("error")
-    expect(putCalls[0].results!.dispatchId).toBe("test-fail1")
+    expect(putCalls[0].results!.dispatchId).toMatch(/^[0-9a-f]{8}$/)
     expect(putCalls[0].results!.logDir).toBe("/tmp/test-logs/fail1")
     expect(putCalls[0].results!.steps).toEqual([])
 

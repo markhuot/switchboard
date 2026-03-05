@@ -146,7 +146,7 @@ export interface DispatchHandle {
  * handle with the subprocess PID and a promise that resolves when the
  * work is done (or rejects on error).
  */
-export type Dispatcher = (task: Task) => DispatchHandle
+export type Dispatcher = (task: Task, dispatchId: string) => DispatchHandle
 
 // ---------------------------------------------------------------------------
 // Lock store
