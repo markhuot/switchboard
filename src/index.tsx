@@ -174,7 +174,7 @@ function App() {
 const renderer = await createCliRenderer()
 createRoot(renderer).render(<App />)
 
-// 4. Start the poll loop
+// 4. Start the poll loop — late subscribers will catch up via event replay.
 const stopPolling = orchestrator.start()
 
 // Graceful shutdown: restore terminal state, stop polling, then exit

@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync } from "fs"
+import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs"
 import { resolve, basename, extname, join } from "path"
 import Mustache from "mustache"
 import type { Dispatcher, DispatchHandle, SwitchboardConfig, Task } from "./types"
@@ -236,6 +236,7 @@ interface StepContext {
   agent: string
   agentScript: string
   logDir: string
+  onPid: (pid: number) => void
 }
 
 /**
@@ -263,7 +264,7 @@ async function runShellStep(
     stderr: "pipe",
   })
 
-  // Capture stdout for directive parsing and logging
+  ctx.onPid(proc.pid)
   const stdoutChunks: Uint8Array[] = []
   const readStream = async (stream: ReadableStream<Uint8Array>, label?: string) => {
     const reader = stream.getReader()
@@ -340,6 +341,8 @@ async function runAgentStep(
     stderr: "pipe",
   })
 
+  ctx.onPid(proc.pid)
+
   const readStream = async (stream: ReadableStream<Uint8Array>) => {
     const reader = stream.getReader()
     while (true) {
@@ -385,6 +388,13 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
     const logDir = join(root, ".switchboard/logs", watcherName, identifier, dispatchId)
     mkdirSync(logDir, { recursive: true })
 
+    // Ensure .switchboard/logs/ has a .gitignore so logs are never committed
+    const logsRoot = join(root, ".switchboard/logs")
+    const gitignorePath = join(logsRoot, ".gitignore")
+    if (!existsSync(gitignorePath)) {
+      writeFileSync(gitignorePath, "*\n!.gitignore\n")
+    }
+
     // We need a PID to return synchronously but we don't have one yet.
     // Use a mutable handle that we update as subprocesses start.
     let currentPid = 0
@@ -426,6 +436,7 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
         agent: opts.agent,
         agentScript: commands["agent.sh"],
         logDir: opts.logDir,
+        onPid: (pid: number) => { currentPid = pid },
       })
 
       // --- Init phase ---

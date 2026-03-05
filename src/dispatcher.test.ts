@@ -291,6 +291,33 @@ describe("createDispatcher", () => {
     expect(log).toEqual(["init", "work", "teardown"])
   })
 
+  test("handle.pid is set to a real subprocess PID", async () => {
+    writeFileSync(
+      join(commandsDir, "init.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    writeFileSync(
+      join(commandsDir, "work.sh"),
+      `#!/bin/bash\nsleep 0.1\n`
+    )
+    writeFileSync(
+      join(commandsDir, "teardown.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+
+    const config = makeConfig()
+    const dispatch = createDispatcher({ config, projectRoot })
+    const handle = dispatch(task)
+
+    // Wait briefly for the first subprocess to spawn
+    await new Promise((r) => setTimeout(r, 50))
+
+    // PID should be a positive integer once a subprocess has started
+    expect(handle.pid).toBeGreaterThan(0)
+
+    await handle.done
+  })
+
   test("creates log directory and writes log files", async () => {
     writeFileSync(
       join(commandsDir, "init.sh"),

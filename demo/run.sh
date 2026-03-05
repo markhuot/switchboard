@@ -1,11 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-AGENT="${1:-opencode}"
 TASKS_FILE="tasks.ndjson"
+
+rm -rf .switchboard/logs/
 
 WATCHER_FILE="$TASKS_FILE" \
   bun ../src/index.tsx \
   --watch=file \
-  --agent="$AGENT" \
-  --concurrency=1
+  --agent=opencode \
+  --concurrency=3 \
+  "$@"

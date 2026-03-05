@@ -26,6 +26,8 @@ export function createOrchestrator(
 ) {
   const inFlight = new Set<string>()
   const listeners = new Set<TaskListener>()
+  /** Latest event per task so late subscribers can catch up. */
+  const currentEvents = new Map<string, TaskEvent>()
   let stopped = false
 
   // Resolvers waiting for a concurrency slot to open
@@ -37,6 +39,12 @@ export function createOrchestrator(
 
   function emit(task: Task, status: TaskStatus, pid?: number) {
     const event: TaskEvent = { task, status, pid }
+    // Track latest event so late subscribers can catch up
+    if (status === "complete" || status === "error") {
+      currentEvents.delete(task.id)
+    } else {
+      currentEvents.set(task.id, event)
+    }
     for (const listener of listeners) {
       listener(event)
     }
@@ -44,6 +52,10 @@ export function createOrchestrator(
 
   function onTaskEvent(listener: TaskListener): () => void {
     listeners.add(listener)
+    // Replay current in-flight events so late subscribers see existing tasks
+    for (const event of currentEvents.values()) {
+      listener(event)
+    }
     return () => listeners.delete(listener)
   }
 
