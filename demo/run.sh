@@ -3,11 +3,14 @@ set -euo pipefail
 
 TASKS_FILE="tasks-source.ndjson"
 
-rm -rf "$TASKS_FILE"
-rm -rf tasks-source-completed.ndjson
+if [[ "${1:-}" == "--cleanup" ]]; then
+  rm -rf "$TASKS_FILE"
+  rm -rf tasks-source-completed.ndjson
+  rm -rf .switchboard/logs/
+  shift
+fi
 
 cp tasks.ndjson "$TASKS_FILE"
-rm -rf .switchboard/logs/
 
 WATCHER_FILE="$TASKS_FILE" \
   bun ../src/index.tsx \
