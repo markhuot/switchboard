@@ -114,6 +114,10 @@ Options:
 
   -h, --help                Show this help message and exit.
 
+Commands:
+  switchboard export [category]   Export default files for customization.
+                                  Run "switchboard export --help" for details.
+
 Examples:
   switchboard --watch=jira --agent=opencode
   switchboard --watch=github --agent=claude --wait-between-polls=1m

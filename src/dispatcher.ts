@@ -49,7 +49,7 @@ if [ ! -d "$WORKSPACE" ]; then
 fi
 
 cd "$SWITCHBOARD_PROJECT_ROOT"
-git worktree remove "$WORKSPACE"
+git worktree remove --force "$WORKSPACE"
 `
 
 export const DEFAULT_AGENT_SH = `#!/bin/bash

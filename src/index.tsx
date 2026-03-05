@@ -8,8 +8,16 @@ import { createDispatcher } from "./dispatcher"
 import { createLockStore } from "./lock-store"
 import { ensureSwitchboardDir } from "./filesystem"
 import { startPlainOutput } from "./plain"
+import { runExport } from "./export"
 import type { TaskEvent } from "./orchestrator"
 import type { Task } from "./types"
+
+// 0. Check for subcommands before normal boot
+if (Bun.argv[2] === "export") {
+  runExport(Bun.argv)
+  // runExport calls process.exit, but guard just in case
+  process.exit(0)
+}
 
 // 1. Parse CLI args (exits if --watch or --agent is missing)
 const config = parseArgs(Bun.argv)
