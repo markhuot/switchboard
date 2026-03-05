@@ -1,4 +1,4 @@
-import type { Dispatcher, SwitchboardConfig, Task, Watcher } from "./types"
+import type { Dispatcher, LockStore, PutContext, StepResult, SwitchboardConfig, Task, TaskResults, Watcher } from "./types"
 
 export type TaskStatus = "in_progress" | "complete" | "error"
 
@@ -16,13 +16,14 @@ export type TaskListener = (event: TaskEvent) => void
  * dispatches them up to the concurrency limit, and waits for a slot
  * to open before pulling the next task.
  *
- * When the generator is exhausted the orchestrator waits pollInterval
+ * When the generator is exhausted the orchestrator waits waitBetweenPolls
  * then calls fetch() again for a fresh pass.
  */
 export function createOrchestrator(
   config: SwitchboardConfig,
   watcher: Watcher,
   dispatch: Dispatcher,
+  lockStore?: LockStore,
 ) {
   const inFlight = new Set<string>()
   const listeners = new Set<TaskListener>()
@@ -33,7 +34,7 @@ export function createOrchestrator(
   // Resolvers waiting for a concurrency slot to open
   let slotOpen: (() => void) | null = null
 
-  // Resolver + timer for the poll-interval sleep so stop() can cancel it
+  // Resolver + timer for the wait-between-polls sleep so stop() can cancel it
   let pollResolve: (() => void) | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -80,6 +81,57 @@ export function createOrchestrator(
   }
 
   /**
+   * Build a TaskResults object from dispatch outcome.
+   */
+  function buildTaskResults(
+    dispatchId: string,
+    logDir: string,
+    steps: StepResult[],
+    status: "complete" | "error",
+  ): TaskResults {
+    return { status, dispatchId, logDir, steps }
+  }
+
+  /**
+   * Build a PutContext that provides capabilities watchers may need
+   * when writing back results (e.g. summarizing a work log).
+   */
+  function buildPutContext(logDir: string): PutContext {
+    return {
+      async summarize(input: string): Promise<string> {
+        // Write input to a temp file and invoke the agent to summarize
+        const { mkdirSync, writeFileSync } = await import("fs")
+        const { join } = await import("path")
+        const promptDir = join(logDir, ".prompts")
+        mkdirSync(promptDir, { recursive: true })
+        const inputPath = join(promptDir, "summarize-input.txt")
+        writeFileSync(inputPath, input)
+
+        const promptPath = join(promptDir, "summarize.md")
+        writeFileSync(
+          promptPath,
+          `Summarize the following agent output concisely, suitable for posting as a comment on a task tracker:\n\n${input}`,
+        )
+
+        // Invoke the agent via the same agent.sh mechanism
+        const agentScript = join(
+          process.cwd(),
+          config.dispatch,
+          "agent.sh",
+        )
+        const proc = Bun.spawn(
+          ["bash", "-lc", `bash "${agentScript}" "${config.agent}" "${promptPath}"`],
+          { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+        )
+
+        const stdout = await new Response(proc.stdout).text()
+        await proc.exited
+        return stdout.trim()
+      },
+    }
+  }
+
+  /**
    * The main loop. Pulls from the watcher generator continuously,
    * waiting for concurrency slots as needed.
    */
@@ -92,21 +144,75 @@ export function createOrchestrator(
           // Validate
           if (!task.id || !task.title) continue
 
-          // Skip tasks already in-flight
-          if (inFlight.has(task.id)) continue
-
           // Wait for a concurrency slot
           await waitForSlot()
           if (stopped) return
 
-          // Dispatch
-          inFlight.add(task.id)
+          // Dispatch -- the dispatcher generates its own dispatch ID
           const handle = dispatch(task)
+
+          // Authoritative check: acquire persistent lock (if lock store provided)
+          if (lockStore) {
+            try {
+              const acquired = await lockStore.acquire(task.id, {
+                dispatchId: handle.dispatchId,
+              })
+              if (!acquired) continue
+            } catch {
+              // Lock store error -- skip this task, try again next tick
+              continue
+            }
+          }
+
+          inFlight.add(task.id)
           emit(task, "in_progress", handle.pid)
           handle.done
-            .then(() => emit(task, "complete", handle.pid))
-            .catch(() => emit(task, "error", handle.pid))
-            .finally(() => {
+            .then(async (steps) => {
+              // Build results for writeback
+              task.results = buildTaskResults(
+                handle.dispatchId,
+                handle.logDir,
+                steps,
+                "complete",
+              )
+              emit(task, "complete", handle.pid)
+
+              // Call watcher.put() if available
+              if (watcher.put) {
+                try {
+                  await watcher.put(task, buildPutContext(handle.logDir))
+                } catch {
+                  // Writeback failure -- log and continue
+                }
+              }
+            })
+            .catch(async () => {
+              // Build error results for writeback
+              task.results = buildTaskResults(
+                handle.dispatchId,
+                handle.logDir,
+                [], // Steps may not be available on error path
+                "error",
+              )
+              emit(task, "error", handle.pid)
+
+              // Call watcher.put() even on failure
+              if (watcher.put) {
+                try {
+                  await watcher.put(task, buildPutContext(handle.logDir))
+                } catch {
+                  // Writeback failure -- log and continue
+                }
+              }
+            })
+            .finally(async () => {
+              if (lockStore) {
+                try {
+                  await lockStore.release(task.id)
+                } catch {
+                  // Lock release failure -- JIT stale detection will clean up
+                }
+              }
               inFlight.delete(task.id)
               releaseSlot()
             })
@@ -123,7 +229,7 @@ export function createOrchestrator(
             pollTimer = null
             pollResolve = null
             resolve()
-          }, config.pollInterval)
+          }, config.waitBetweenPolls)
         })
       }
     }
@@ -133,7 +239,7 @@ export function createOrchestrator(
     run()
     return () => {
       stopped = true
-      // Cancel the poll-interval sleep so run() can exit immediately
+      // Cancel the wait-between-polls sleep so run() can exit immediately
       if (pollTimer) {
         clearTimeout(pollTimer)
         pollTimer = null

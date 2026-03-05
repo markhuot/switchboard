@@ -1,4 +1,6 @@
-import type { SwitchboardConfig, Task, Watcher } from "../types"
+import { readFileSync } from "fs"
+import { join } from "path"
+import type { SwitchboardConfig, Task, PutContext, Watcher } from "../types"
 
 // --- Internal types ---
 
@@ -105,6 +107,84 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
     "Content-Type": "application/json",
   }
 
+  async function transitionIssue(
+    issueId: string,
+    transitionName: string
+  ): Promise<void> {
+    try {
+      const res = await fetch(
+        `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
+        {
+          method: "GET",
+          headers,
+          signal: AbortSignal.timeout(15_000),
+        }
+      )
+
+      if (!res.ok) {
+        console.warn(
+          `Failed to fetch transitions for ${issueId}: ${res.status} ${res.statusText}`
+        )
+        return
+      }
+
+      const data: { transitions: { id: string; name: string }[] } =
+        await res.json()
+
+      const match = data.transitions.find(
+        (t) => t.name.toLowerCase() === transitionName.toLowerCase()
+      )
+
+      if (!match) {
+        console.warn(
+          `Transition "${transitionName}" not found for issue ${issueId}. ` +
+            `Available: ${data.transitions.map((t) => t.name).join(", ")}`
+        )
+        return
+      }
+
+      const postRes = await fetch(
+        `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ transition: { id: match.id } }),
+          signal: AbortSignal.timeout(15_000),
+        }
+      )
+
+      if (!postRes.ok) {
+        console.warn(
+          `Failed to transition ${issueId} to "${transitionName}": ${postRes.status} ${postRes.statusText}`
+        )
+      }
+    } catch (err) {
+      console.warn(`Error transitioning issue ${issueId}:`, err)
+    }
+  }
+
+  async function addComment(issueId: string, body: string): Promise<void> {
+    try {
+      const res = await fetch(
+        `${baseUrl}/rest/api/2/issue/${issueId}/comment`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ body }),
+          signal: AbortSignal.timeout(15_000),
+        }
+      )
+
+      if (!res.ok) {
+        console.warn(
+          `Failed to add comment to ${issueId}: ${res.status} ${res.statusText}`
+        )
+      }
+    } catch (err) {
+      console.warn(`Error adding comment to issue ${issueId}:`, err)
+    }
+  }
+
   return {
     async *fetch() {
       let startAt = 0
@@ -138,6 +218,28 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
 
         startAt += data.issues.length
         if (startAt >= data.total) break
+      }
+    },
+
+    async put(task: Task, context: PutContext): Promise<void> {
+      const workLogPath = join(task.results!.logDir, "work.md.log")
+      let summary: string
+
+      try {
+        const workLog = readFileSync(workLogPath, "utf-8")
+        summary = await context.summarize(workLog)
+      } catch {
+        summary = "(no work log available)"
+      }
+
+      if (task.results?.status === "complete") {
+        await transitionIssue(
+          task.id,
+          process.env.JIRA_DONE_TRANSITION ?? "Done"
+        )
+        await addComment(task.id, summary)
+      } else {
+        await addComment(task.id, `Dispatch failed:\n\n${summary}`)
       }
     },
   }

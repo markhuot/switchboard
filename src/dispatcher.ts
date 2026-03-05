@@ -1,7 +1,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from "fs"
 import { resolve, basename, extname, join } from "path"
 import Mustache from "mustache"
-import type { Dispatcher, DispatchHandle, SwitchboardConfig, Task } from "./types"
+import type { Dispatcher, DispatchHandle, StepResult, SwitchboardConfig, Task } from "./types"
 
 // ---------------------------------------------------------------------------
 // Default scripts inlined as string constants
@@ -66,6 +66,10 @@ case "$AGENT" in
     ;;
   copilot)
     gh copilot --prompt "$(cat "$PROMPT_FILE")"
+    ;;
+  dummy)
+    # No-cost test agent that just sleeps for a random 4-15 seconds
+    sleep $(( RANDOM % 12 + 4 ))
     ;;
   *)
     # Unknown agent -- treat the value as a command and pass the prompt
@@ -369,6 +373,22 @@ async function runAgentStep(
 }
 
 // ---------------------------------------------------------------------------
+// Exit code extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract a numeric exit code from an error thrown by runShellStep or
+ * runAgentStep. Falls back to 1 if the code cannot be determined.
+ */
+function extractExitCode(err: unknown): number {
+  if (err instanceof Error) {
+    const match = err.message.match(/exited with code (\d+)/)
+    if (match) return parseInt(match[1], 10)
+  }
+  return 1
+}
+
+// ---------------------------------------------------------------------------
 // createDispatcher factory
 // ---------------------------------------------------------------------------
 
@@ -388,13 +408,6 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
     const logDir = join(root, ".switchboard/logs", watcherName, identifier, dispatchId)
     mkdirSync(logDir, { recursive: true })
 
-    // Ensure .switchboard/logs/ has a .gitignore so logs are never committed
-    const logsRoot = join(root, ".switchboard/logs")
-    const gitignorePath = join(logsRoot, ".gitignore")
-    if (!existsSync(gitignorePath)) {
-      writeFileSync(gitignorePath, "*\n!.gitignore\n")
-    }
-
     // We need a PID to return synchronously but we don't have one yet.
     // Use a mutable handle that we update as subprocesses start.
     let currentPid = 0
@@ -409,6 +422,8 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
 
     return {
       get pid() { return currentPid },
+      dispatchId,
+      logDir,
       done,
     }
 
@@ -422,10 +437,11 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
         agent: string
         logDir: string
       },
-    ): Promise<void> {
+    ): Promise<StepResult[]> {
       let cwd = opts.projectRoot
       let initFailed = false
       let workFailed = false
+      const steps: StepResult[] = []
 
       const makeCtx = (): StepContext => ({
         task,
@@ -447,6 +463,7 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
           const ctx = makeCtx()
           ctx.cwd = opts.projectRoot
           const stdout = await runShellStep(commands["init.sh"], "init.sh", ctx)
+          steps.push({ name: "init.sh", exitCode: 0 })
           const directives = extractDirectives(stdout)
           if (directives.cwd) {
             cwd = resolve(opts.projectRoot, directives.cwd)
@@ -456,8 +473,12 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
         // init.md
         if (commands["init.md"]) {
           await runAgentStep(commands["init.md"], "init.md", makeCtx())
+          steps.push({ name: "init.md", exitCode: 0 })
         }
-      } catch {
+      } catch (err) {
+        const exitCode = extractExitCode(err)
+        const lastStepName = commands["init.md"] ? "init.md" : "init.sh"
+        steps.push({ name: lastStepName, exitCode })
         initFailed = true
       }
 
@@ -467,13 +488,18 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
           // work.sh
           if (commands["work.sh"]) {
             await runShellStep(commands["work.sh"], "work.sh", makeCtx())
+            steps.push({ name: "work.sh", exitCode: 0 })
           }
 
           // work.md
           if (commands["work.md"]) {
             await runAgentStep(commands["work.md"], "work.md", makeCtx())
+            steps.push({ name: "work.md", exitCode: 0 })
           }
-        } catch {
+        } catch (err) {
+          const exitCode = extractExitCode(err)
+          const lastStepName = commands["work.md"] ? "work.md" : "work.sh"
+          steps.push({ name: lastStepName, exitCode })
           workFailed = true
         }
       }
@@ -484,13 +510,18 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
         // teardown.md (agent goes first in teardown)
         if (commands["teardown.md"]) {
           await runAgentStep(commands["teardown.md"], "teardown.md", makeCtx())
+          steps.push({ name: "teardown.md", exitCode: 0 })
         }
 
         // teardown.sh
         if (commands["teardown.sh"]) {
           await runShellStep(commands["teardown.sh"], "teardown.sh", makeCtx())
+          steps.push({ name: "teardown.sh", exitCode: 0 })
         }
-      } catch {
+      } catch (err) {
+        const exitCode = extractExitCode(err)
+        const lastStepName = commands["teardown.sh"] ? "teardown.sh" : "teardown.md"
+        steps.push({ name: lastStepName, exitCode })
         teardownFailed = true
       }
 
@@ -504,6 +535,8 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
           ].filter(Boolean).join(", ")}`,
         )
       }
+
+      return steps
     }
   }
 }

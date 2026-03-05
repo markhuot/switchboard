@@ -1,4 +1,6 @@
-import type { SwitchboardConfig, Watcher, Task } from "../types"
+import type { SwitchboardConfig, Watcher, Task, PutContext } from "../types"
+import { appendFileSync } from "fs"
+import { join, parse as parsePath } from "path"
 
 /**
  * Normalize a raw object from NDJSON into a Task, or null if invalid.
@@ -28,6 +30,47 @@ function normalizeTask(raw: unknown): Task | null {
 }
 
 /**
+ * Resolve the path to the completed-tasks file.
+ *
+ * If WATCHER_FILE_COMPLETE is set, use that directly. Otherwise derive
+ * a sibling path from the source: `foo.ndjson` → `foo-completed.ndjson`.
+ */
+function resolveCompletedPath(sourcePath: string): string {
+  if (process.env.WATCHER_FILE_COMPLETE) {
+    return process.env.WATCHER_FILE_COMPLETE
+  }
+  const { dir, name, ext } = parsePath(sourcePath)
+  return join(dir || ".", `${name}-completed${ext}`)
+}
+
+/**
+ * Read the completed-tasks file and return a Set of task IDs that
+ * have already been processed. Returns an empty set if the file
+ * does not exist yet.
+ */
+async function loadCompletedIds(completedPath: string): Promise<Set<string>> {
+  const ids = new Set<string>()
+  try {
+    const content = await Bun.file(completedPath).text()
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const parsed = JSON.parse(trimmed)
+        const id =
+          typeof parsed.id === "number" ? String(parsed.id) : parsed.id
+        if (typeof id === "string") ids.add(id)
+      } catch {
+        // Skip malformed lines in the completed file.
+      }
+    }
+  } catch {
+    // File doesn't exist yet — no completed tasks.
+  }
+  return ids
+}
+
+/**
  * Create a Watcher that reads NDJSON from a file or socket.
  *
  * Set WATCHER_FILE to the path of a regular file, named pipe (FIFO),
@@ -37,6 +80,10 @@ function normalizeTask(raw: unknown): Task | null {
  * For regular files the generator reads all lines and returns.
  * For pipes and sockets it streams lines as they arrive, yielding
  * tasks in real-time until the writer closes the connection.
+ *
+ * Completed tasks are recorded in a separate file so the source is
+ * never modified. Set WATCHER_FILE_COMPLETE to override the default
+ * path (`<name>-completed.<ext>` next to the source file).
  */
 export default function createWatcher(_config: SwitchboardConfig): Watcher {
   const filePath = process.env.WATCHER_FILE
@@ -44,8 +91,13 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
     throw new Error("Missing required environment variable: WATCHER_FILE")
   }
 
+  const completedPath = resolveCompletedPath(filePath)
+
   return {
     async *fetch(): AsyncGenerator<Task> {
+      // Load the set of already-completed task IDs so we skip them.
+      const completedIds = await loadCompletedIds(completedPath)
+
       const file = Bun.file(filePath)
       const decoder = new TextDecoder()
       let buffer = ""
@@ -72,7 +124,7 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
           }
 
           const task = normalizeTask(parsed)
-          if (task) {
+          if (task && !completedIds.has(task.id)) {
             yield task
           }
         }
@@ -84,7 +136,7 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
         try {
           const parsed = JSON.parse(remaining)
           const task = normalizeTask(parsed)
-          if (task) {
+          if (task && !completedIds.has(task.id)) {
             yield task
           }
         } catch {
@@ -93,6 +145,11 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
           )
         }
       }
+    },
+
+    async put(task: Task, _context: PutContext): Promise<void> {
+      // Task is a pure DTO — JSON.stringify works cleanly.
+      appendFileSync(completedPath, JSON.stringify(task) + "\n")
     },
   }
 }

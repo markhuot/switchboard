@@ -25,6 +25,11 @@ describe("parseDuration", () => {
     expect(parseDuration("1m")).toBe(60_000)
   })
 
+  test("parses hours suffix", () => {
+    expect(parseDuration("1h")).toBe(3_600_000)
+    expect(parseDuration("2h")).toBe(7_200_000)
+  })
+
   test("bare integer treated as seconds", () => {
     expect(parseDuration("10")).toBe(10_000)
     expect(parseDuration("60")).toBe(60_000)
@@ -105,9 +110,9 @@ describe("parseArgs", () => {
     expect(config.dispatch).toBe(".switchboard/commands/")
   })
 
-  test("parses --poll-interval flag", () => {
-    const config = parseArgs(["bun", "script.ts", "--watch=jira", "--agent=opencode", "--poll-interval=5s"])
-    expect(config.pollInterval).toBe(5_000)
+  test("parses --wait-between-polls flag", () => {
+    const config = parseArgs(["bun", "script.ts", "--watch=jira", "--agent=opencode", "--wait-between-polls=5s"])
+    expect(config.waitBetweenPolls).toBe(5_000)
   })
 
   test("parses --concurrency flag", () => {
@@ -115,9 +120,9 @@ describe("parseArgs", () => {
     expect(config.concurrency).toBe(10)
   })
 
-  test("defaults pollInterval to 30s", () => {
+  test("defaults waitBetweenPolls to 30s", () => {
     const config = parseArgs(["bun", "script.ts", "--watch=jira", "--agent=opencode"])
-    expect(config.pollInterval).toBe(30_000)
+    expect(config.waitBetweenPolls).toBe(30_000)
   })
 
   test("defaults concurrency to 2x CPU cores", () => {
@@ -135,12 +140,22 @@ describe("parseArgs", () => {
     expect(config.watch).toBe("./my-watcher.ts")
   })
 
+  test("parses --task-ttl flag", () => {
+    const config = parseArgs(["bun", "script.ts", "--watch=jira", "--agent=opencode", "--task-ttl=30m"])
+    expect(config.taskTtl).toBe(1_800_000)
+  })
+
+  test("defaults taskTtl to 1h", () => {
+    const config = parseArgs(["bun", "script.ts", "--watch=jira", "--agent=opencode"])
+    expect(config.taskTtl).toBe(3_600_000)
+  })
+
 })
 
 // --- createShellWatcher ---
 
 function shellConfig(command: string): SwitchboardConfig {
-  return { watch: `$ ${command}`, agent: "test", dispatch: ".switchboard/commands/", pollInterval: 30_000, concurrency: 4 }
+  return { watch: `$ ${command}`, agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false }
 }
 
 describe("createShellWatcher", () => {
@@ -257,8 +272,9 @@ describe("createShellWatcher", () => {
       watch: `$ echo '[{"id":"1","title":"Prefixed"}]'`,
       agent: "test",
       dispatch: ".switchboard/commands/",
-      pollInterval: 30_000,
+      waitBetweenPolls: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -277,8 +293,9 @@ describe("resolveWatcher", () => {
       watch: '$ echo \'[{"id":"1","title":"Shell task"}]\'',
       agent: "test",
       dispatch: ".switchboard/commands/",
-      pollInterval: 30_000,
+      waitBetweenPolls: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -306,8 +323,9 @@ describe("resolveWatcher", () => {
       watch: "./.tmp/test-watcher.ts",
       agent: "test",
       dispatch: ".switchboard/commands/",
-      pollInterval: 30_000,
+      waitBetweenPolls: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -337,8 +355,9 @@ describe("resolveWatcher", () => {
         watch: "jira",
         agent: "test",
         dispatch: ".switchboard/commands/",
-        pollInterval: 30_000,
+        waitBetweenPolls: 30_000,
         concurrency: 4,
+        noTty: false,
         })
       const tasks: Task[] = []
       for await (const task of watcher.fetch()) {
@@ -394,7 +413,7 @@ describe("createOrchestrator", () => {
 
     const watcher = createMockWatcher(tasks)
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", pollInterval: 60_000, concurrency: 10 },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
       watcher,
       dispatch
     )
@@ -420,7 +439,7 @@ describe("createOrchestrator", () => {
 
     const watcher = createMockWatcher(tasks)
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", pollInterval: 60_000, concurrency: 2 },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 2, noTty: false },
       watcher,
       dispatch
     )
@@ -442,7 +461,7 @@ describe("createOrchestrator", () => {
 
     const watcher = createMockWatcher(tasks)
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", pollInterval: 60_000, concurrency: 2 },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 2, noTty: false },
       watcher,
       dispatch
     )
@@ -477,7 +496,7 @@ describe("createOrchestrator", () => {
     }
 
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", pollInterval: 60_000, concurrency: 10 },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
       watcher,
       dispatch
     )
@@ -686,7 +705,7 @@ describe("createJiraWatcher", () => {
     process.env.JIRA_JQL = "project = TEST"
 
     expect(() =>
-      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", pollInterval: 30_000, concurrency: 4 })
+      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
     ).toThrow("Missing required environment variable: JIRA_BASE_URL")
   })
 
@@ -696,7 +715,7 @@ describe("createJiraWatcher", () => {
     process.env.JIRA_JQL = "project = TEST"
 
     expect(() =>
-      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", pollInterval: 30_000, concurrency: 4 })
+      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
     ).toThrow("Missing required environment variable: JIRA_TOKEN")
   })
 
@@ -706,7 +725,7 @@ describe("createJiraWatcher", () => {
     delete process.env.JIRA_JQL
 
     expect(() =>
-      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", pollInterval: 30_000, concurrency: 4 })
+      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
     ).toThrow("Missing required environment variable: JIRA_JQL")
   })
 
@@ -719,8 +738,9 @@ describe("createJiraWatcher", () => {
       watch: "jira",
       agent: "test",
       dispatch: ".switchboard/commands/",
-      pollInterval: 30_000,
+      waitBetweenPolls: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     expect(watcher).toBeDefined()
     expect(typeof watcher.fetch).toBe("function")
@@ -785,8 +805,9 @@ describe("createJiraWatcher", () => {
         watch: "jira",
         agent: "test",
         dispatch: ".switchboard/commands/",
-        pollInterval: 30_000,
+        waitBetweenPolls: 30_000,
         concurrency: 4,
+        noTty: false,
         })
 
       const tasks: Task[] = []
@@ -866,8 +887,9 @@ describe("createJiraWatcher", () => {
         watch: "jira",
         agent: "test",
         dispatch: ".switchboard/commands/",
-        pollInterval: 30_000,
+        waitBetweenPolls: 30_000,
         concurrency: 20,
+        noTty: false,
         })
 
       const tasks: Task[] = []
@@ -899,8 +921,9 @@ describe("createJiraWatcher", () => {
         watch: "jira",
         agent: "test",
         dispatch: ".switchboard/commands/",
-        pollInterval: 30_000,
+        waitBetweenPolls: 30_000,
         concurrency: 4,
+        noTty: false,
         })
 
       const tasks: Task[] = []
@@ -937,8 +960,9 @@ describe("createJiraWatcher", () => {
         watch: "jira",
         agent: "test",
         dispatch: ".switchboard/commands/",
-        pollInterval: 30_000,
+        waitBetweenPolls: 30_000,
         concurrency: 4,
+        noTty: false,
         })
 
       const tasks: Task[] = []
@@ -980,8 +1004,9 @@ describe("createJiraWatcher", () => {
         watch: "jira",
         agent: "test",
         dispatch: ".switchboard/commands/",
-        pollInterval: 30_000,
+        waitBetweenPolls: 30_000,
         concurrency: 4,
+        noTty: false,
         })
 
       for await (const _ of watcher.fetch()) {

@@ -1,7 +1,7 @@
 import { describe, test, expect, mock } from "bun:test"
 import { resolveWatcher } from "./watcher"
 import type { Task } from "./types"
-import { mkdirSync, writeFileSync, unlinkSync } from "fs"
+import { mkdirSync, writeFileSync, unlinkSync, readFileSync, existsSync } from "fs"
 
 // --- resolveWatcher ---
 
@@ -15,6 +15,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -33,6 +34,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -64,6 +66,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -93,6 +96,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -128,6 +132,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 5_000,
       concurrency: 42,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -158,6 +163,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
         })
       expect(typeof watcher.fetch).toBe("function")
 
@@ -195,6 +201,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
         })
     } catch (e: any) {
       expect(e.message).toBe("process.exit called")
@@ -227,6 +234,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
         })
     } catch {
       // expected
@@ -264,6 +272,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
       })
       const tasks: Task[] = []
       for await (const task of watcher.fetch()) {
@@ -318,6 +327,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
       })
       const tasks: Task[] = []
       for await (const task of watcher.fetch()) {
@@ -350,6 +360,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
       })
       const tasks: Task[] = []
       for await (const task of watcher.fetch()) {
@@ -372,6 +383,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
       })
     ).rejects.toThrow("Missing required environment variable: WATCHER_FILE")
   })
@@ -396,6 +408,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
       })
       const tasks: Task[] = []
       for await (const task of watcher.fetch()) {
@@ -431,6 +444,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
         concurrency: 4,
+        noTty: false,
         })
     } catch {
       // expected -- unknown built-in
@@ -464,6 +478,7 @@ describe("resolveWatcher", () => {
       dispatch: ".switchboard/commands/",
       pollInterval: 30_000,
       concurrency: 4,
+      noTty: false,
     })
     const tasks: Task[] = []
     for await (const task of watcher.fetch()) {
@@ -471,5 +486,269 @@ describe("resolveWatcher", () => {
     }
     expect(tasks).toHaveLength(1)
     expect(tasks[0].id).toBe("parent-1")
+  })
+
+  // -- File watcher put() and completed-file filtering --
+
+  test("file watcher put() appends to the completed file without modifying the source", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const filePath = ".tmp/put-basic.ndjson"
+    const completedPath = ".tmp/put-basic-completed.ndjson"
+    const originalContent = [
+      JSON.stringify({ id: "a", title: "Task A" }),
+      JSON.stringify({ id: "b", title: "Task B" }),
+      JSON.stringify({ id: "c", title: "Task C" }),
+    ].join("\n") + "\n"
+    writeFileSync(filePath, originalContent)
+
+    process.env.WATCHER_FILE = filePath
+    try {
+      const watcher = await resolveWatcher({
+        watch: "file",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        pollInterval: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      await watcher.put!({
+        id: "b",
+        title: "Task B",
+        description: null,
+        url: null,
+        priority: null,
+      }, { summarize: async () => "" })
+
+      // Source file must be untouched
+      expect(readFileSync(filePath, "utf-8")).toBe(originalContent)
+
+      // Completed file should have task b
+      const completed = readFileSync(completedPath, "utf-8")
+      const completedLines = completed.split("\n").filter((l) => l.trim())
+      expect(completedLines).toHaveLength(1)
+      expect(JSON.parse(completedLines[0]).id).toBe("b")
+    } finally {
+      delete process.env.WATCHER_FILE
+      if (existsSync(filePath)) unlinkSync(filePath)
+      if (existsSync(completedPath)) unlinkSync(completedPath)
+    }
+  })
+
+  test("file watcher fetch() skips tasks that appear in the completed file", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const filePath = ".tmp/fetch-skip.ndjson"
+    const completedPath = ".tmp/fetch-skip-completed.ndjson"
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({ id: "a", title: "Task A" }),
+        JSON.stringify({ id: "b", title: "Task B" }),
+        JSON.stringify({ id: "c", title: "Task C" }),
+      ].join("\n") + "\n"
+    )
+    // Pre-populate the completed file with task b
+    writeFileSync(completedPath, JSON.stringify({ id: "b" }) + "\n")
+
+    process.env.WATCHER_FILE = filePath
+    try {
+      const watcher = await resolveWatcher({
+        watch: "file",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        pollInterval: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      const tasks: Task[] = []
+      for await (const task of watcher.fetch()) {
+        tasks.push(task)
+      }
+      expect(tasks).toHaveLength(2)
+      expect(tasks[0].id).toBe("a")
+      expect(tasks[1].id).toBe("c")
+    } finally {
+      delete process.env.WATCHER_FILE
+      if (existsSync(filePath)) unlinkSync(filePath)
+      if (existsSync(completedPath)) unlinkSync(completedPath)
+    }
+  })
+
+  test("file watcher put() then fetch() round-trip skips completed tasks", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const filePath = ".tmp/put-fetch-rt.ndjson"
+    const completedPath = ".tmp/put-fetch-rt-completed.ndjson"
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({ id: "1", title: "First" }),
+        JSON.stringify({ id: "2", title: "Second" }),
+        JSON.stringify({ id: "3", title: "Third" }),
+      ].join("\n") + "\n"
+    )
+
+    process.env.WATCHER_FILE = filePath
+    try {
+      const watcher = await resolveWatcher({
+        watch: "file",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        pollInterval: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      // Complete tasks 1 and 3
+      const mockCtx = { summarize: async () => "" }
+      await watcher.put!({ id: "1", title: "First", description: null, url: null, priority: null }, mockCtx)
+      await watcher.put!({ id: "3", title: "Third", description: null, url: null, priority: null }, mockCtx)
+
+      // Next fetch should only yield task 2
+      const tasks: Task[] = []
+      for await (const task of watcher.fetch()) {
+        tasks.push(task)
+      }
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0].id).toBe("2")
+
+      // Completed file should have both, in order
+      const completed = readFileSync(completedPath, "utf-8")
+      const completedLines = completed.split("\n").filter((l) => l.trim())
+      expect(completedLines).toHaveLength(2)
+      expect(JSON.parse(completedLines[0]).id).toBe("1")
+      expect(JSON.parse(completedLines[1]).id).toBe("3")
+    } finally {
+      delete process.env.WATCHER_FILE
+      if (existsSync(filePath)) unlinkSync(filePath)
+      if (existsSync(completedPath)) unlinkSync(completedPath)
+    }
+  })
+
+  test("file watcher put() includes results metadata in completed file", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const filePath = ".tmp/put-results.ndjson"
+    const completedPath = ".tmp/put-results-completed.ndjson"
+    writeFileSync(filePath, JSON.stringify({ id: "r1", title: "With results" }) + "\n")
+
+    process.env.WATCHER_FILE = filePath
+    try {
+      const watcher = await resolveWatcher({
+        watch: "file",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        pollInterval: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      const mockContext = { summarize: async () => "summary" }
+
+      await watcher.put!({
+        id: "r1",
+        title: "With results",
+        description: null,
+        url: null,
+        priority: null,
+        results: {
+          status: "complete",
+          dispatchId: "d-123",
+          logDir: "/tmp/logs/d-123",
+          steps: [{ name: "init.sh", exitCode: 0 }],
+        },
+      }, mockContext)
+
+      const completed = readFileSync(completedPath, "utf-8")
+      const entry = JSON.parse(completed.trim())
+      expect(entry.id).toBe("r1")
+      expect(entry.results.status).toBe("complete")
+      expect(entry.results.dispatchId).toBe("d-123")
+      expect(entry.results.logDir).toBe("/tmp/logs/d-123")
+      expect(entry.results.steps).toEqual([{ name: "init.sh", exitCode: 0 }])
+    } finally {
+      delete process.env.WATCHER_FILE
+      if (existsSync(filePath)) unlinkSync(filePath)
+      if (existsSync(completedPath)) unlinkSync(completedPath)
+    }
+  })
+
+  test("file watcher uses WATCHER_FILE_COMPLETE when set", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const filePath = ".tmp/put-custom.ndjson"
+    const customCompletedPath = ".tmp/custom-done.ndjson"
+    const defaultCompletedPath = ".tmp/put-custom-completed.ndjson"
+    writeFileSync(filePath, JSON.stringify({ id: "x", title: "Task X" }) + "\n")
+
+    process.env.WATCHER_FILE = filePath
+    process.env.WATCHER_FILE_COMPLETE = customCompletedPath
+    try {
+      const watcher = await resolveWatcher({
+        watch: "file",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        pollInterval: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      await watcher.put!({ id: "x", title: "Task X", description: null, url: null, priority: null }, { summarize: async () => "" })
+
+      // Should write to the custom path, not the derived one
+      expect(existsSync(customCompletedPath)).toBe(true)
+      expect(existsSync(defaultCompletedPath)).toBe(false)
+
+      const completed = readFileSync(customCompletedPath, "utf-8")
+      expect(JSON.parse(completed.trim()).id).toBe("x")
+
+      // fetch() should also read from the custom completed path
+      const tasks: Task[] = []
+      for await (const task of watcher.fetch()) {
+        tasks.push(task)
+      }
+      expect(tasks).toHaveLength(0)
+    } finally {
+      delete process.env.WATCHER_FILE
+      delete process.env.WATCHER_FILE_COMPLETE
+      if (existsSync(filePath)) unlinkSync(filePath)
+      if (existsSync(customCompletedPath)) unlinkSync(customCompletedPath)
+      if (existsSync(defaultCompletedPath)) unlinkSync(defaultCompletedPath)
+    }
+  })
+
+  test("file watcher fetch() yields all tasks when no completed file exists", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const filePath = ".tmp/no-completed.ndjson"
+    const completedPath = ".tmp/no-completed-completed.ndjson"
+    writeFileSync(
+      filePath,
+      [
+        JSON.stringify({ id: "1", title: "One" }),
+        JSON.stringify({ id: "2", title: "Two" }),
+      ].join("\n") + "\n"
+    )
+    // Ensure no completed file exists
+    if (existsSync(completedPath)) unlinkSync(completedPath)
+
+    process.env.WATCHER_FILE = filePath
+    try {
+      const watcher = await resolveWatcher({
+        watch: "file",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        pollInterval: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      const tasks: Task[] = []
+      for await (const task of watcher.fetch()) {
+        tasks.push(task)
+      }
+      expect(tasks).toHaveLength(2)
+    } finally {
+      delete process.env.WATCHER_FILE
+      if (existsSync(filePath)) unlinkSync(filePath)
+      if (existsSync(completedPath)) unlinkSync(completedPath)
+    }
   })
 })

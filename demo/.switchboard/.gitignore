@@ -1,0 +1,5 @@
+# Ignore everything except the commands directory
+*
+!.gitignore
+!commands/
+!commands/**

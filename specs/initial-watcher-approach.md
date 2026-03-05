@@ -25,14 +25,14 @@ switchboard --watch=./adapters/my-jira.ts
 switchboard --watch="$ gh issue list --label=Backlog --json number,title,body"
 ```
 
-### `--poll-interval` (optional)
+### `--wait-between-polls` (optional)
 
 How often to call the watcher. Accepts a human-readable duration string.
 
 ```
-switchboard --watch=jira --poll-interval=3s
-switchboard --watch=jira --poll-interval=30s
-switchboard --watch=jira --poll-interval=2m
+switchboard --watch=jira --wait-between-polls=3s
+switchboard --watch=jira --wait-between-polls=30s
+switchboard --watch=jira --wait-between-polls=2m
 ```
 
 Default: `30s`
@@ -69,8 +69,8 @@ All parsed CLI flags are written into a singleton config object. This object is 
 
 ```ts
 interface SwitchboardConfig {
-  /** Parsed from --poll-interval. Milliseconds. */
-  pollInterval: number
+  /** Parsed from --wait-between-polls. Milliseconds. */
+  waitBetweenPolls: number
 
   /** Parsed from --concurrency. Max simultaneous agents. */
   concurrency: number
@@ -246,14 +246,14 @@ Parse flags from `Bun.argv`. No third-party parser -- the flag set is small.
 ```ts
 function parseArgs(argv: string[]): SwitchboardConfig {
   let watch: string | undefined
-  let pollInterval = 30_000 // default 30s
+  let waitBetweenPolls = 30_000 // default 30s
   let concurrency = 2 * require("os").cpus().length // default 2x CPU cores
 
   for (const arg of argv.slice(2)) {
     if (arg.startsWith("--watch=")) {
       watch = arg.slice("--watch=".length)
-    } else if (arg.startsWith("--poll-interval=")) {
-      pollInterval = parseDuration(arg.slice("--poll-interval=".length))
+    } else if (arg.startsWith("--wait-between-polls=")) {
+      waitBetweenPolls = parseDuration(arg.slice("--wait-between-polls=".length))
     } else if (arg.startsWith("--concurrency=")) {
       concurrency = parseInt(arg.slice("--concurrency=".length), 10)
     }
@@ -269,7 +269,7 @@ function parseArgs(argv: string[]): SwitchboardConfig {
     process.exit(1)
   }
 
-  return { watch, pollInterval, concurrency }
+  return { watch, waitBetweenPolls, concurrency }
 }
 ```
 
@@ -336,7 +336,7 @@ async function tick() {
 }
 
 tick()
-setInterval(tick, config.pollInterval)
+setInterval(tick, config.waitBetweenPolls)
 ```
 
 ## Dispatch and Backpressure

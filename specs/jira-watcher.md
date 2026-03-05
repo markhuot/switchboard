@@ -355,7 +355,7 @@ The watcher does not distinguish between transient and permanent errors. A 401 (
 
 - Credentials could be rotated mid-run, making a 401 transient.
 - A Jira instance restart could cause brief 5xx errors that resolve on their own.
-- The poll loop already provides natural retry cadence via `--poll-interval`.
+- The poll loop already provides natural retry cadence via `--wait-between-polls`.
 
 If authentication is permanently broken the watcher will log an error on every tick. The operator sees repeated `401 Unauthorized` messages and fixes the credentials.
 
@@ -532,7 +532,7 @@ JIRA_BASE_URL=https://jira.example.com \
 JIRA_USERNAME=bot-user \
 JIRA_PASSWORD=secret \
 JIRA_JQL="project = MYPROJ AND status = 'To Do' ORDER BY priority ASC, created ASC" \
-switchboard --watch=jira --poll-interval=1m --concurrency=5
+switchboard --watch=jira --wait-between-polls=1m --concurrency=5
 ```
 
 ### Scoped to a specific sprint

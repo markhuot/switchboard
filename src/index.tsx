@@ -1,22 +1,29 @@
 import { createCliRenderer } from "@opentui/core"
 import { createRoot, useKeyboard } from "@opentui/react"
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect } from "react"
 import { parseArgs, formatElapsed } from "./config"
 import { resolveWatcher } from "./watcher"
 import { createOrchestrator } from "./orchestrator"
 import { createDispatcher } from "./dispatcher"
+import { createLockStore } from "./lock-store"
+import { ensureSwitchboardDir } from "./filesystem"
+import { startPlainOutput } from "./plain"
 import type { TaskEvent } from "./orchestrator"
 import type { Task } from "./types"
 
 // 1. Parse CLI args (exits if --watch or --agent is missing)
 const config = parseArgs(Bun.argv)
 
+// 2. Ensure .switchboard/ directory exists with a .gitignore
+ensureSwitchboardDir(process.cwd())
+
 // 2. Resolve the watcher (exits if built-in name is unknown or module fails to load)
 const watcher = await resolveWatcher(config)
 
-// 3. Create the dispatcher and orchestrator
+// 3. Create the dispatcher, lock store, and orchestrator
 const dispatch = createDispatcher({ config })
-const orchestrator = createOrchestrator(config, watcher, dispatch)
+const lockStore = createLockStore(config)
+const orchestrator = createOrchestrator(config, watcher, dispatch, lockStore)
 
 type TaskRowStatus = "in_progress" | "complete" | "error"
 
@@ -149,7 +156,7 @@ function App() {
 
       <box style={{ marginTop: 1 }}>
         <text>
-          <span fg="#22c55e">Polling ({config.pollInterval / 1000}s)</span>
+          <span fg="#22c55e">Polling ({config.waitBetweenPolls / 1000}s)</span>
           <span fg="#555">
             {" "}| Watcher: {config.watch} | Concurrency: {config.concurrency}
           </span>
@@ -171,17 +178,33 @@ function App() {
   )
 }
 
-const renderer = await createCliRenderer()
-createRoot(renderer).render(<App />)
+let shutdown: () => void
 
-// 4. Start the poll loop — late subscribers will catch up via event replay.
-const stopPolling = orchestrator.start()
+if (config.noTty) {
+  // ── Plain (non-interactive) output mode ──────────────────────────
+  const stop = startPlainOutput(config, orchestrator)
 
-// Graceful shutdown: restore terminal state, stop polling, then exit
-function shutdown() {
-  stopPolling()
-  renderer.destroy()
-  process.exit(0)
+  shutdown = () => {
+    stop()
+    process.exit(0)
+  }
+
+  process.on("SIGINT", shutdown)
+  process.on("SIGTERM", shutdown)
+} else {
+  // ── Full-screen TUI mode ─────────────────────────────────────────
+  const renderer = await createCliRenderer()
+  createRoot(renderer).render(<App />)
+
+  // Start the poll loop — late subscribers will catch up via event replay.
+  const stopPolling = orchestrator.start()
+
+  // Graceful shutdown: restore terminal state, stop polling, then exit
+  shutdown = () => {
+    stopPolling()
+    renderer.destroy()
+    process.exit(0)
+  }
 }
 
 export { shutdown }
