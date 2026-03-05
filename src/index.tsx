@@ -200,17 +200,28 @@ if (config.noTty) {
   process.on("SIGTERM", shutdown)
 } else {
   // ── Full-screen TUI mode ─────────────────────────────────────────
-  const renderer = await createCliRenderer()
+  const renderer = await createCliRenderer({
+    // onDestroy fires *after* the native renderer has restored the terminal
+    // (cursor visibility, alternate screen, raw mode, etc.), so it is the
+    // safe place to call process.exit.
+    onDestroy: () => {
+      process.exit(0)
+    },
+  })
   createRoot(renderer).render(<App />)
 
   // Start the poll loop — late subscribers will catch up via event replay.
   const stopPolling = orchestrator.start()
 
-  // Graceful shutdown: restore terminal state, stop polling, then exit
-  shutdown = () => {
+  // When the renderer is destroyed — whether by our shutdown() or by
+  // OpenTUI's built-in Ctrl+C handler — stop polling immediately.
+  renderer.on("destroy", () => {
     stopPolling()
+  })
+
+  // Graceful shutdown: destroying the renderer triggers the cleanup above.
+  shutdown = () => {
     renderer.destroy()
-    process.exit(0)
   }
 }
 
