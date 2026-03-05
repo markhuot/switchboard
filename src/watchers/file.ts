@@ -1,5 +1,5 @@
 import type { SwitchboardConfig, Watcher, Task, PutContext } from "../types"
-import { appendFileSync } from "fs"
+import { appendFileSync, createReadStream } from "fs"
 import { join, parse as parsePath } from "path"
 
 /**
@@ -98,15 +98,16 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
       // Load the set of already-completed task IDs so we skip them.
       const completedIds = await loadCompletedIds(completedPath)
 
-      const file = Bun.file(filePath)
-      const decoder = new TextDecoder()
+      // Use node:fs createReadStream instead of Bun.file().stream().
+      // Bun.file().stream() has a bug that destroys process.stdin ~2s
+      // after the stream closes when running in a TTY. This kills all
+      // keyboard input in the TUI. The bug does not reproduce in
+      // non-TTY mode.
+      const stream = createReadStream(filePath, { encoding: "utf8" })
       let buffer = ""
 
-      for await (const chunk of file.stream()) {
-        buffer +=
-          typeof chunk === "string"
-            ? chunk
-            : decoder.decode(new Uint8Array(chunk), { stream: true })
+      for await (const chunk of stream) {
+        buffer += chunk
 
         let newlineIndex: number
         while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
@@ -131,7 +132,7 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
       }
 
       // Handle any remaining data after stream ends (no trailing newline)
-      const remaining = (buffer + decoder.decode()).trim()
+      const remaining = buffer.trim()
       if (remaining) {
         try {
           const parsed = JSON.parse(remaining)
