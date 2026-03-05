@@ -8,7 +8,7 @@ let fakePid = 90000
 
 /** Dispatch that resolves instantly. */
 const instantDispatch: Dispatcher = () => {
-  return { pid: ++fakePid, done: Promise.resolve() }
+  return { pid: ++fakePid, done: Promise.resolve(), output: {} }
 }
 
 /** Dispatch that never resolves (tasks stay in-flight for the test's lifetime). */
@@ -16,7 +16,7 @@ function hangingDispatch(): { dispatch: Dispatcher; resolve: () => void } {
   let resolver: () => void
   const gate = new Promise<void>((r) => { resolver = r })
   return {
-    dispatch: () => ({ pid: ++fakePid, done: gate }),
+    dispatch: () => ({ pid: ++fakePid, done: gate, output: {} }),
     resolve: () => resolver(),
   }
 }
@@ -31,7 +31,7 @@ function controllableDispatch() {
     const done = new Promise<void>((resolve) => {
       resolvers.set(task.id, resolve)
     })
-    return { pid: ++fakePid, done }
+    return { pid: ++fakePid, done, output: {} }
   }
 
   return {
@@ -91,14 +91,32 @@ describe("createOrchestrator", () => {
     stop()
   })
 
-  test("respects concurrency limit", async () => {
-    const { dispatch } = controllableDispatch()
-    const tasks = Array.from({ length: 5 }, (_, i) =>
-      makeTask({ id: String(i + 1), title: `Task ${i + 1}` })
-    )
-    const watcher = createMockWatcher(tasks)
+  test("passes handle.output to put() via context.output", async () => {
+    const resolvers = new Map<string, (steps: StepResult[]) => void>()
+    let fakePid = 80000
+
+    const dispatch: Dispatcher = (task) => {
+      const dispatchId = `test-${task.id}`
+      const logDir = `/tmp/test-logs/${task.id}`
+      const done = new Promise<StepResult[]>((resolve) => {
+        resolvers.set(task.id, resolve)
+      })
+      // Pre-populate output as if directives were collected during lifecycle
+      const output = { pr_url: "https://github.com/org/repo/pull/42", custom: "value" }
+      return { pid: ++fakePid, dispatchId, logDir, done, output }
+    }
+
+    const putContexts: PutContext[] = []
+    const watcher: Watcher = {
+      async *fetch() {
+        yield makeTask({ id: "out1", title: "Output task" })
+      },
+      async put(_task, context) {
+        putContexts.push(context)
+      },
+    }
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 3, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
       watcher,
       dispatch
     )
@@ -106,7 +124,16 @@ describe("createOrchestrator", () => {
     const stop = orchestrator.start()
     await new Promise((r) => setTimeout(r, 50))
 
-    expect(orchestrator.inFlight.size).toBe(3)
+    const resolve = resolvers.get("out1")
+    if (resolve) resolve([])
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(putContexts).toHaveLength(1)
+    expect(putContexts[0].output).toEqual({
+      pr_url: "https://github.com/org/repo/pull/42",
+      custom: "value",
+    })
+
     stop()
   })
 
@@ -437,7 +464,7 @@ function newControllableDispatch() {
       resolvers.set(task.id, resolve)
       rejecters.set(task.id, reject)
     })
-    return { pid: ++fakePid, dispatchId, logDir, done }
+    return { pid: ++fakePid, dispatchId, logDir, done, output: {} }
   }
 
   return {
@@ -460,6 +487,7 @@ function newInstantDispatch(): Dispatcher {
     dispatchId: `instant-${task.id}`,
     logDir: `/tmp/test-logs/${task.id}`,
     done: Promise.resolve([]),
+    output: {},
   })
 }
 

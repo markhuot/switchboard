@@ -86,6 +86,42 @@ export const DEFAULT_WORK_MD = `# {{task.identifier}}: {{task.title}}
 Work on this task until it is complete.
 `
 
+export const DEFAULT_TEARDOWN_MD = `# Teardown: {{task.identifier}}: {{task.title}}
+
+You are reviewing completed work for this task. Your job is to determine if the
+work is ready for human review and, if so, open a pull request.
+
+## Instructions
+
+1. Review the changes on the current branch using \`git log\` and \`git diff main\`
+   to understand what was accomplished.
+
+2. If there are meaningful commits that would benefit from human review — even if
+   the work is not fully complete — open a pull request:
+
+   a. Push the branch to the remote:
+      \`\`\`
+      git push -u origin "switchboard/{{task.identifier}}"
+      \`\`\`
+
+   b. Create a pull request with a clear, descriptive summary of the changes:
+      \`\`\`
+      gh pr create \\
+        --title "{{task.identifier}}: {{task.title}}" \\
+        --body "<description of changes>" \\
+        --base main
+      \`\`\`
+
+   c. After creating the PR, include the following directive on its own line in
+      your response (this is how Switchboard captures the PR URL):
+      \`\`\`
+      ##switchboard:pr_url=<the PR URL>
+      \`\`\`
+
+3. If there are no meaningful changes (e.g., the branch has no new commits ahead
+   of main), skip PR creation.
+`
+
 // ---------------------------------------------------------------------------
 // Dispatch ID generation
 // ---------------------------------------------------------------------------
@@ -115,10 +151,6 @@ export function normalizeWatcherName(watch: string): string {
 // ##switchboard: directive parsing
 // ---------------------------------------------------------------------------
 
-export interface ParsedDirectives {
-  cwd?: string
-}
-
 /**
  * Parse ##switchboard: directives from a line of stdout.
  * Returns the directive key/value if the line is a directive, or null otherwise.
@@ -130,21 +162,6 @@ export function parseDirective(line: string): { key: string; value: string } | n
   const eqIndex = rest.indexOf("=")
   if (eqIndex === -1) return null
   return { key: rest.slice(0, eqIndex), value: rest.slice(eqIndex + 1) }
-}
-
-/**
- * Scan stdout text line-by-line for ##switchboard: directives.
- * Returns the accumulated directives (last value wins for each key).
- */
-export function extractDirectives(stdout: string): ParsedDirectives {
-  const directives: ParsedDirectives = {}
-  for (const line of stdout.split("\n")) {
-    const d = parseDirective(line.trim())
-    if (d && d.key === "cwd") {
-      directives.cwd = d.value
-    }
-  }
-  return directives
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +192,7 @@ function buildTaskEnv(
   projectRoot: string,
   dispatchId: string,
   watcherName: string,
+  logDir: string,
 ): Record<string, string> {
   return {
     TASK_ID: task.id,
@@ -186,6 +204,7 @@ function buildTaskEnv(
     SWITCHBOARD_PROJECT_ROOT: projectRoot,
     SWITCHBOARD_DISPATCH_ID: dispatchId,
     SWITCHBOARD_WATCHER: watcherName,
+    SWITCHBOARD_LOG_DIR: logDir,
   }
 }
 
@@ -221,7 +240,7 @@ function resolveCommands(commandsDir: string, projectRoot: string): ResolvedComm
     "init.md": readIfExists("init.md"),
     "work.sh": readIfExists("work.sh"),
     "work.md": readIfExists("work.md") ?? DEFAULT_WORK_MD,
-    "teardown.md": readIfExists("teardown.md"),
+    "teardown.md": readIfExists("teardown.md") ?? DEFAULT_TEARDOWN_MD,
     "teardown.sh": readIfExists("teardown.sh") ?? DEFAULT_TEARDOWN_SH,
     "agent.sh": readIfExists("agent.sh") ?? DEFAULT_AGENT_SH,
   }
@@ -241,104 +260,58 @@ interface StepContext {
   agentScript: string
   logDir: string
   onPid: (pid: number) => void
+  onDirective: (key: string, value: string) => void
 }
 
 /**
- * Run a shell script step. Returns the stdout text so directives can be parsed.
+ * Run a single lifecycle step. The step type is inferred from the file
+ * extension in `stepName`:
+ *
+ *  - `.sh` — the content is executed directly as a bash script.
+ *  - `.md` — the content is treated as a Mustache template, rendered with
+ *            task context, written to a temp file, and passed to agent.sh.
+ *
+ * In both cases stdout is streamed through a line scanner to detect
+ * ##switchboard: directives in real time, and all output is logged.
  * Throws on non-zero exit.
  */
-async function runShellStep(
-  script: string,
-  stepName: string,
-  ctx: StepContext,
-): Promise<string> {
-  const env = {
-    ...process.env,
-    ...buildTaskEnv(ctx.task, ctx.projectRoot, ctx.dispatchId, ctx.watcherName),
-  }
-
-  const logPath = join(ctx.logDir, `${stepName}.log`)
-  const logFile = Bun.file(logPath)
-  const logWriter = logFile.writer()
-
-  const proc = Bun.spawn(["bash", "-lc", script], {
-    cwd: ctx.cwd,
-    env,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-
-  ctx.onPid(proc.pid)
-  const stdoutChunks: Uint8Array[] = []
-  const readStream = async (stream: ReadableStream<Uint8Array>, label?: string) => {
-    const reader = stream.getReader()
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value) {
-        if (label === "stdout") stdoutChunks.push(new Uint8Array(value))
-        logWriter.write(value)
-      }
-    }
-  }
-
-  await Promise.all([
-    readStream(proc.stdout as ReadableStream<Uint8Array>, "stdout"),
-    readStream(proc.stderr as ReadableStream<Uint8Array>),
-  ])
-
-  await logWriter.flush()
-  logWriter.end()
-
-  const exitCode = await proc.exited
-  const totalLength = stdoutChunks.reduce((sum, chunk) => sum + chunk.length, 0)
-  const combined = new Uint8Array(totalLength)
-  let offset = 0
-  for (const chunk of stdoutChunks) {
-    combined.set(chunk, offset)
-    offset += chunk.length
-  }
-  const stdoutText = new TextDecoder().decode(combined)
-
-  if (exitCode !== 0) {
-    throw new Error(`${stepName} exited with code ${exitCode}`)
-  }
-
-  return stdoutText
-}
-
-/**
- * Run an agent (`.md`) step. Renders the Mustache template, writes it to
- * a temp file, and invokes agent.sh with it.
- * Throws on non-zero exit.
- */
-async function runAgentStep(
-  template: string,
+async function runStep(
+  content: string,
   stepName: string,
   ctx: StepContext,
 ): Promise<void> {
-  const rendered = renderTemplate(template, ctx.task, process.env as Record<string, string | undefined>)
+  const ext = extname(stepName)
 
-  // Write rendered prompt to a temp file
-  const promptDir = join(ctx.logDir, ".prompts")
-  mkdirSync(promptDir, { recursive: true })
-  const promptPath = join(promptDir, `${stepName}`)
-  await Bun.write(promptPath, rendered)
+  // Build the command to spawn based on file extension
+  let spawnArgs: string[]
+  if (ext === ".md") {
+    // Render Mustache template and write to a temp file
+    const rendered = renderTemplate(content, ctx.task, process.env as Record<string, string | undefined>)
+    const promptDir = join(ctx.logDir, ".prompts")
+    mkdirSync(promptDir, { recursive: true })
+    const promptPath = join(promptDir, stepName)
+    await Bun.write(promptPath, rendered)
+
+    // Write agent.sh to a temp file and invoke it with the prompt
+    const agentScriptPath = join(promptDir, "agent.sh")
+    await Bun.write(agentScriptPath, ctx.agentScript)
+
+    spawnArgs = ["bash", "-lc", `bash "${agentScriptPath}" "${ctx.agent}" "${promptPath}"`]
+  } else {
+    // .sh — run the script content directly
+    spawnArgs = ["bash", "-lc", content]
+  }
 
   const env = {
     ...process.env,
-    ...buildTaskEnv(ctx.task, ctx.projectRoot, ctx.dispatchId, ctx.watcherName),
+    ...buildTaskEnv(ctx.task, ctx.projectRoot, ctx.dispatchId, ctx.watcherName, ctx.logDir),
   }
 
   const logPath = join(ctx.logDir, `${stepName}.log`)
   const logFile = Bun.file(logPath)
   const logWriter = logFile.writer()
 
-  // Write the agent.sh to a temp file and invoke it
-  const agentScriptPath = join(promptDir, "agent.sh")
-  await Bun.write(agentScriptPath, ctx.agentScript)
-
-  const proc = Bun.spawn(["bash", "-lc", `bash "${agentScriptPath}" "${ctx.agent}" "${promptPath}"`], {
+  const proc = Bun.spawn(spawnArgs, {
     cwd: ctx.cwd,
     env,
     stdout: "pipe",
@@ -347,20 +320,44 @@ async function runAgentStep(
 
   ctx.onPid(proc.pid)
 
-  const readStream = async (stream: ReadableStream<Uint8Array>) => {
+  const readStdout = async (stream: ReadableStream<Uint8Array>) => {
     const reader = stream.getReader()
+    const decoder = new TextDecoder()
+    let partial = ""
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
       if (value) {
         logWriter.write(value)
+        partial += decoder.decode(value, { stream: true })
+        const lines = partial.split("\n")
+        // Last element is the incomplete line (or "" if chunk ended on \n)
+        partial = lines.pop()!
+        for (const line of lines) {
+          const d = parseDirective(line.trim())
+          if (d) ctx.onDirective(d.key, d.value)
+        }
       }
+    }
+    // Flush any remaining partial line
+    if (partial) {
+      const d = parseDirective(partial.trim())
+      if (d) ctx.onDirective(d.key, d.value)
+    }
+  }
+
+  const readStderr = async (stream: ReadableStream<Uint8Array>) => {
+    const reader = stream.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) logWriter.write(value)
     }
   }
 
   await Promise.all([
-    readStream(proc.stdout as ReadableStream<Uint8Array>),
-    readStream(proc.stderr as ReadableStream<Uint8Array>),
+    readStdout(proc.stdout as ReadableStream<Uint8Array>),
+    readStderr(proc.stderr as ReadableStream<Uint8Array>),
   ])
 
   await logWriter.flush()
@@ -368,7 +365,7 @@ async function runAgentStep(
 
   const exitCode = await proc.exited
   if (exitCode !== 0) {
-    throw new Error(`${stepName} agent exited with code ${exitCode}`)
+    throw new Error(`${stepName} exited with code ${exitCode}`)
   }
 }
 
@@ -377,8 +374,8 @@ async function runAgentStep(
 // ---------------------------------------------------------------------------
 
 /**
- * Extract a numeric exit code from an error thrown by runShellStep or
- * runAgentStep. Falls back to 1 if the code cannot be determined.
+ * Extract a numeric exit code from an error thrown by runStep.
+ * Falls back to 1 if the code cannot be determined.
  */
 function extractExitCode(err: unknown): number {
   if (err instanceof Error) {
@@ -411,6 +408,7 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
     // We need a PID to return synchronously but we don't have one yet.
     // Use a mutable handle that we update as subprocesses start.
     let currentPid = 0
+    const output: Record<string, string> = {}
 
     const done = runLifecycle(task, commands, {
       projectRoot: root,
@@ -424,6 +422,7 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
       get pid() { return currentPid },
       dispatchId,
       logDir,
+      output,
       done,
     }
 
@@ -443,6 +442,13 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
       let workFailed = false
       const steps: StepResult[] = []
 
+      const onDirective = (key: string, value: string) => {
+        output[key] = value
+        if (key === "cwd") {
+          cwd = resolve(opts.projectRoot, value)
+        }
+      }
+
       const makeCtx = (): StepContext => ({
         task,
         projectRoot: opts.projectRoot,
@@ -453,6 +459,7 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
         agentScript: commands["agent.sh"],
         logDir: opts.logDir,
         onPid: (pid: number) => { currentPid = pid },
+        onDirective,
       })
 
       // --- Init phase ---
@@ -462,17 +469,13 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
           // init.sh always runs in project root
           const ctx = makeCtx()
           ctx.cwd = opts.projectRoot
-          const stdout = await runShellStep(commands["init.sh"], "init.sh", ctx)
+          await runStep(commands["init.sh"], "init.sh", ctx)
           steps.push({ name: "init.sh", exitCode: 0 })
-          const directives = extractDirectives(stdout)
-          if (directives.cwd) {
-            cwd = resolve(opts.projectRoot, directives.cwd)
-          }
         }
 
         // init.md
         if (commands["init.md"]) {
-          await runAgentStep(commands["init.md"], "init.md", makeCtx())
+          await runStep(commands["init.md"], "init.md", makeCtx())
           steps.push({ name: "init.md", exitCode: 0 })
         }
       } catch (err) {
@@ -487,13 +490,13 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
         try {
           // work.sh
           if (commands["work.sh"]) {
-            await runShellStep(commands["work.sh"], "work.sh", makeCtx())
+            await runStep(commands["work.sh"], "work.sh", makeCtx())
             steps.push({ name: "work.sh", exitCode: 0 })
           }
 
           // work.md
           if (commands["work.md"]) {
-            await runAgentStep(commands["work.md"], "work.md", makeCtx())
+            await runStep(commands["work.md"], "work.md", makeCtx())
             steps.push({ name: "work.md", exitCode: 0 })
           }
         } catch (err) {
@@ -509,13 +512,13 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
       try {
         // teardown.md (agent goes first in teardown)
         if (commands["teardown.md"]) {
-          await runAgentStep(commands["teardown.md"], "teardown.md", makeCtx())
+          await runStep(commands["teardown.md"], "teardown.md", makeCtx())
           steps.push({ name: "teardown.md", exitCode: 0 })
         }
 
         // teardown.sh
         if (commands["teardown.sh"]) {
-          await runShellStep(commands["teardown.sh"], "teardown.sh", makeCtx())
+          await runStep(commands["teardown.sh"], "teardown.sh", makeCtx())
           steps.push({ name: "teardown.sh", exitCode: 0 })
         }
       } catch (err) {

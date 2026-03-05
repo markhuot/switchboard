@@ -232,6 +232,12 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
         summary = "(no work log available)"
       }
 
+      // Append PR link if the teardown agent created one
+      const prUrl = context.output.pr_url
+      if (prUrl) {
+        summary += `\n\nPull request: ${prUrl}`
+      }
+
       if (task.results?.status === "complete") {
         await transitionIssue(
           task.id,

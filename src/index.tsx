@@ -1,6 +1,7 @@
 import { createCliRenderer } from "@opentui/core"
 import { createRoot, useKeyboard } from "@opentui/react"
 import { useState, useEffect } from "react"
+import { appendFileSync } from "fs"
 import { parseArgs, formatElapsed } from "./config"
 import { resolveWatcher } from "./watcher"
 import { createOrchestrator } from "./orchestrator"
@@ -10,6 +11,11 @@ import { ensureSwitchboardDir } from "./filesystem"
 import { startPlainOutput } from "./plain"
 import type { TaskEvent } from "./orchestrator"
 import type { Task } from "./types"
+
+const DEBUG_LOG = ".switchboard/debug.log"
+function dbg(msg: string) {
+  appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] [index] ${msg}\n`)
+}
 
 // 1. Parse CLI args (exits if --watch or --agent is missing)
 const config = parseArgs(Bun.argv)
@@ -118,6 +124,7 @@ function App() {
 
   useEffect(() => {
     return orchestrator.onTaskEvent((event: TaskEvent) => {
+      dbg(`taskEvent: ${event.task.id} status=${event.status}`)
       if (event.status === "complete") {
         // Remove from the table and tick the counter — no need to keep
         // finished task objects in memory.
@@ -142,7 +149,9 @@ function App() {
   }, [])
 
   useKeyboard((key) => {
+    dbg(`useKeyboard fired: key.name="${key.name}"`)
     if (key.name === "q") {
+      dbg("q pressed, calling shutdown()")
       shutdown()
     }
   })
@@ -180,11 +189,15 @@ function App() {
 
 let shutdown: () => void
 
+dbg(`config.noTty=${config.noTty}, stdout.isTTY=${process.stdout.isTTY}`)
+
 if (config.noTty) {
   // ── Plain (non-interactive) output mode ──────────────────────────
+  dbg("entering plain (no-tty) mode")
   const stop = startPlainOutput(config, orchestrator)
 
   shutdown = () => {
+    dbg("shutdown() called (plain mode)")
     stop()
     process.exit(0)
   }
@@ -193,6 +206,7 @@ if (config.noTty) {
   process.on("SIGTERM", shutdown)
 } else {
   // ── Full-screen TUI mode ─────────────────────────────────────────
+  dbg("entering TUI mode")
   const renderer = await createCliRenderer()
   createRoot(renderer).render(<App />)
 
@@ -201,6 +215,7 @@ if (config.noTty) {
 
   // Graceful shutdown: restore terminal state, stop polling, then exit
   shutdown = () => {
+    dbg("shutdown() called (TUI mode)")
     stopPolling()
     renderer.destroy()
     process.exit(0)

@@ -84,6 +84,17 @@ export interface PutContext {
    * comments back to a task tracker.
    */
   summarize(input: string): Promise<string>
+
+  /**
+   * Key-value pairs collected from ##switchboard: directives emitted
+   * during the dispatch lifecycle. For example, if the teardown agent
+   * prints `##switchboard:pr_url=https://...`, this map will contain
+   * `{ pr_url: "https://..." }`.
+   *
+   * Watchers can use this to reference structured output from the
+   * lifecycle without parsing logs.
+   */
+  output: Record<string, string>
 }
 
 export interface Watcher {
@@ -119,6 +130,12 @@ export interface DispatchHandle {
   dispatchId: string
   /** Absolute path to the log directory for this dispatch attempt. */
   logDir: string
+  /**
+   * Key-value pairs collected from ##switchboard: directives emitted
+   * by lifecycle steps. Accumulated as steps run — readable even if
+   * the dispatch ultimately fails.
+   */
+  output: Record<string, string>
   /** Resolves with per-step results when the subprocess exits. */
   done: Promise<StepResult[]>
 }

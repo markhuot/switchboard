@@ -5,11 +5,11 @@ import {
   generateDispatchId,
   normalizeWatcherName,
   parseDirective,
-  extractDirectives,
   renderTemplate,
   createDispatcher,
   DEFAULT_INIT_SH,
   DEFAULT_TEARDOWN_SH,
+  DEFAULT_TEARDOWN_MD,
   DEFAULT_AGENT_SH,
   DEFAULT_WORK_MD,
 } from "./dispatcher"
@@ -98,37 +98,35 @@ describe("parseDirective", () => {
 })
 
 // ---------------------------------------------------------------------------
-// extractDirectives
+// parseDirective
 // ---------------------------------------------------------------------------
 
-describe("extractDirectives", () => {
-  test("extracts cwd directive from mixed output", () => {
-    const stdout = [
-      "Installing dependencies...",
-      "##switchboard:cwd=.switchboard/workspaces/PROJ-123",
-      "Done!",
-    ].join("\n")
-    const directives = extractDirectives(stdout)
-    expect(directives.cwd).toBe(".switchboard/workspaces/PROJ-123")
+describe("parseDirective", () => {
+  test("extracts cwd directive", () => {
+    const d = parseDirective("##switchboard:cwd=.switchboard/workspaces/PROJ-123")
+    expect(d).toEqual({ key: "cwd", value: ".switchboard/workspaces/PROJ-123" })
   })
 
-  test("last cwd directive wins", () => {
-    const stdout = [
-      "##switchboard:cwd=/first/path",
-      "##switchboard:cwd=/second/path",
-    ].join("\n")
-    const directives = extractDirectives(stdout)
-    expect(directives.cwd).toBe("/second/path")
+  test("extracts arbitrary directive keys", () => {
+    expect(parseDirective("##switchboard:pr_url=https://github.com/org/repo/pull/42"))
+      .toEqual({ key: "pr_url", value: "https://github.com/org/repo/pull/42" })
+    expect(parseDirective("##switchboard:custom_key=some_value"))
+      .toEqual({ key: "custom_key", value: "some_value" })
   })
 
-  test("returns empty object when no directives", () => {
-    const directives = extractDirectives("just regular output\nmore output")
-    expect(directives.cwd).toBeUndefined()
+  test("returns null for non-directive lines", () => {
+    expect(parseDirective("just regular output")).toBeNull()
+    expect(parseDirective("")).toBeNull()
+    expect(parseDirective("# a comment")).toBeNull()
   })
 
-  test("handles empty string", () => {
-    const directives = extractDirectives("")
-    expect(directives.cwd).toBeUndefined()
+  test("returns null when no = sign", () => {
+    expect(parseDirective("##switchboard:missing_equals")).toBeNull()
+  })
+
+  test("value can contain = signs", () => {
+    const d = parseDirective("##switchboard:key=a=b=c")
+    expect(d).toEqual({ key: "key", value: "a=b=c" })
   })
 })
 
@@ -223,6 +221,14 @@ describe("default scripts", () => {
     expect(DEFAULT_WORK_MD).toContain("{{task.identifier}}")
     expect(DEFAULT_WORK_MD).toContain("{{task.title}}")
     expect(DEFAULT_WORK_MD).toContain("{{task.description}}")
+  })
+
+  test("DEFAULT_TEARDOWN_MD is a Mustache template with PR instructions", () => {
+    expect(DEFAULT_TEARDOWN_MD).toContain("{{task.identifier}}")
+    expect(DEFAULT_TEARDOWN_MD).toContain("{{task.title}}")
+    expect(DEFAULT_TEARDOWN_MD).toContain("##switchboard:pr_url=")
+    expect(DEFAULT_TEARDOWN_MD).toContain("gh pr create")
+    expect(DEFAULT_TEARDOWN_MD).toContain("git push")
   })
 })
 
@@ -603,6 +609,113 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
 
     const initCwd = readFileSync(join(projectRoot, "init-cwd.txt"), "utf-8").trim()
     expect(initCwd).toBe(projectRoot)
+  })
+
+  test("collects ##switchboard: directives into handle.output", async () => {
+    writeFileSync(
+      join(commandsDir, "init.sh"),
+      `#!/bin/bash\necho "##switchboard:cwd=${projectRoot}"\necho "##switchboard:init_key=init_val"\n`
+    )
+    writeFileSync(
+      join(commandsDir, "work.sh"),
+      `#!/bin/bash\necho "##switchboard:work_key=work_val"\n`
+    )
+    writeFileSync(
+      join(commandsDir, "teardown.sh"),
+      `#!/bin/bash\necho "##switchboard:pr_url=https://github.com/org/repo/pull/1"\n`
+    )
+
+    const config = makeConfig()
+    const dispatch = createDispatcher({ config, projectRoot })
+    const handle = dispatch(task)
+
+    await handle.done
+
+    expect(handle.output.cwd).toBe(projectRoot)
+    expect(handle.output.init_key).toBe("init_val")
+    expect(handle.output.work_key).toBe("work_val")
+    expect(handle.output.pr_url).toBe("https://github.com/org/repo/pull/1")
+  })
+
+  test("handle.output is available even when dispatch fails", async () => {
+    writeFileSync(
+      join(commandsDir, "init.sh"),
+      `#!/bin/bash\necho "##switchboard:init_key=before_fail"\n`
+    )
+    writeFileSync(
+      join(commandsDir, "work.sh"),
+      `#!/bin/bash\necho "##switchboard:work_key=partial"\nexit 1\n`
+    )
+    writeFileSync(
+      join(commandsDir, "teardown.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+
+    const config = makeConfig()
+    const dispatch = createDispatcher({ config, projectRoot })
+    const handle = dispatch(task)
+
+    await expect(handle.done).rejects.toThrow()
+
+    // Directives from steps that ran before the failure are still collected
+    expect(handle.output.init_key).toBe("before_fail")
+    expect(handle.output.work_key).toBe("partial")
+  })
+
+  test("passes SWITCHBOARD_LOG_DIR to shell scripts", async () => {
+    writeFileSync(
+      join(commandsDir, "init.sh"),
+      `#!/bin/bash\necho "LOG_DIR=$SWITCHBOARD_LOG_DIR" > "${projectRoot}/log-dir.txt"\n`
+    )
+    writeFileSync(
+      join(commandsDir, "work.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    writeFileSync(
+      join(commandsDir, "teardown.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+
+    const config = makeConfig()
+    const dispatch = createDispatcher({ config, projectRoot })
+    const handle = dispatch(task)
+
+    await handle.done
+
+    const content = readFileSync(join(projectRoot, "log-dir.txt"), "utf-8")
+    expect(content).toContain("LOG_DIR=")
+    expect(content).toContain(".switchboard/logs/")
+    // Should not be empty
+    expect(content).not.toBe("LOG_DIR=\n")
+  })
+
+  test("collects directives from agent steps via agent.sh stdout", async () => {
+    writeFileSync(
+      join(commandsDir, "init.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    // Create a teardown.md that uses template variables
+    writeFileSync(
+      join(commandsDir, "teardown.md"),
+      `Print the PR URL for {{task.identifier}}\n`
+    )
+    writeFileSync(
+      join(commandsDir, "teardown.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    // Agent script that echoes a directive
+    writeFileSync(
+      join(commandsDir, "agent.sh"),
+      `#!/bin/bash\necho "##switchboard:pr_url=https://github.com/org/repo/pull/99"\n`
+    )
+
+    const config = makeConfig()
+    const dispatch = createDispatcher({ config, projectRoot })
+    const handle = dispatch(task)
+
+    await handle.done
+
+    expect(handle.output.pr_url).toBe("https://github.com/org/repo/pull/99")
   })
 
   test("uses default init.sh when no user-defined init.sh exists", async () => {

@@ -1,4 +1,10 @@
+import { appendFileSync } from "fs"
 import type { Dispatcher, LockStore, PutContext, StepResult, SwitchboardConfig, Task, TaskResults, Watcher } from "./types"
+
+const DEBUG_LOG = ".switchboard/debug.log"
+function dbg(msg: string) {
+  appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] [orchestrator] ${msg}\n`)
+}
 
 export type TaskStatus = "in_progress" | "complete" | "error"
 
@@ -96,8 +102,9 @@ export function createOrchestrator(
    * Build a PutContext that provides capabilities watchers may need
    * when writing back results (e.g. summarizing a work log).
    */
-  function buildPutContext(logDir: string): PutContext {
+  function buildPutContext(logDir: string, output: Record<string, string>): PutContext {
     return {
+      output,
       async summarize(input: string): Promise<string> {
         // Write input to a temp file and invoke the agent to summarize
         const { mkdirSync, writeFileSync } = await import("fs")
@@ -121,7 +128,7 @@ export function createOrchestrator(
         )
         const proc = Bun.spawn(
           ["bash", "-lc", `bash "${agentScript}" "${config.agent}" "${promptPath}"`],
-          { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+          { cwd: process.cwd(), stdin: "ignore", stdout: "pipe", stderr: "pipe" },
         )
 
         const stdout = await new Response(proc.stdout).text()
@@ -136,20 +143,27 @@ export function createOrchestrator(
    * waiting for concurrency slots as needed.
    */
   async function run() {
+    dbg("run() started")
     while (!stopped) {
+      dbg(`loop iteration, stopped=${stopped}, inFlight=${inFlight.size}`)
       try {
+        dbg("calling watcher.fetch()")
         for await (const task of watcher.fetch()) {
-          if (stopped) return
+          dbg(`got task: ${task.id} "${task.title}"`)
+          if (stopped) { dbg("stopped=true after task, returning"); return }
 
           // Validate
-          if (!task.id || !task.title) continue
+          if (!task.id || !task.title) { dbg("invalid task, skipping"); continue }
 
           // Wait for a concurrency slot
+          dbg(`waiting for slot, inFlight=${inFlight.size}, concurrency=${config.concurrency}`)
           await waitForSlot()
-          if (stopped) return
+          dbg("slot acquired")
+          if (stopped) { dbg("stopped=true after slot, returning"); return }
 
           // Dispatch -- the dispatcher generates its own dispatch ID
           const handle = dispatch(task)
+          dbg(`dispatched task ${task.id}, pid=${handle.pid}`)
 
           // Authoritative check: acquire persistent lock (if lock store provided)
           if (lockStore) {
@@ -157,17 +171,21 @@ export function createOrchestrator(
               const acquired = await lockStore.acquire(task.id, {
                 dispatchId: handle.dispatchId,
               })
-              if (!acquired) continue
+              if (!acquired) { dbg(`lock not acquired for ${task.id}, skipping`); continue }
+              dbg(`lock acquired for ${task.id}`)
             } catch {
               // Lock store error -- skip this task, try again next tick
+              dbg(`lock error for ${task.id}, skipping`)
               continue
             }
           }
 
           inFlight.add(task.id)
           emit(task, "in_progress", handle.pid)
+          dbg(`task ${task.id} in flight, total inFlight=${inFlight.size}`)
           handle.done
             .then(async (steps) => {
+              dbg(`task ${task.id} completed successfully`)
               // Build results for writeback
               task.results = buildTaskResults(
                 handle.dispatchId,
@@ -180,13 +198,14 @@ export function createOrchestrator(
               // Call watcher.put() if available
               if (watcher.put) {
                 try {
-                  await watcher.put(task, buildPutContext(handle.logDir))
+                  await watcher.put(task, buildPutContext(handle.logDir, handle.output))
                 } catch {
                   // Writeback failure -- log and continue
                 }
               }
             })
             .catch(async () => {
+              dbg(`task ${task.id} failed`)
               // Build error results for writeback
               task.results = buildTaskResults(
                 handle.dispatchId,
@@ -199,13 +218,14 @@ export function createOrchestrator(
               // Call watcher.put() even on failure
               if (watcher.put) {
                 try {
-                  await watcher.put(task, buildPutContext(handle.logDir))
+                  await watcher.put(task, buildPutContext(handle.logDir, handle.output))
                 } catch {
                   // Writeback failure -- log and continue
                 }
               }
             })
             .finally(async () => {
+              dbg(`task ${task.id} finally, releasing lock/slot, inFlight before=${inFlight.size}`)
               if (lockStore) {
                 try {
                   await lockStore.release(task.id)
@@ -215,14 +235,18 @@ export function createOrchestrator(
               }
               inFlight.delete(task.id)
               releaseSlot()
+              dbg(`task ${task.id} cleaned up, inFlight after=${inFlight.size}`)
             })
         }
+        dbg("generator exhausted (for-await ended)")
       } catch (err) {
+        dbg(`watcher.fetch() threw: ${err}`)
         // Watcher fetch failed -- wait then retry
       }
 
       // Generator exhausted -- wait before starting a fresh pass
       if (!stopped) {
+        dbg(`sleeping ${config.waitBetweenPolls}ms before next poll`)
         await new Promise<void>((resolve) => {
           pollResolve = resolve
           pollTimer = setTimeout(() => {
@@ -231,13 +255,17 @@ export function createOrchestrator(
             resolve()
           }, config.waitBetweenPolls)
         })
+        dbg("poll sleep finished")
       }
     }
+    dbg("run() exited loop")
   }
 
   function start(): () => void {
+    dbg("start() called")
     run()
     return () => {
+      dbg("stop() called")
       stopped = true
       // Cancel the wait-between-polls sleep so run() can exit immediately
       if (pollTimer) {
