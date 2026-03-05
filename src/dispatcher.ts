@@ -100,7 +100,35 @@ export const DEFAULT_WORK_MD = `# {{task.identifier}}: {{task.title}}
 
 {{task.description}}
 
-Work on this task until it is complete.
+## Getting started
+
+Before writing any code, assess the current state of the branch. This task may
+be new work or a revision of previous work — the branch may already contain
+commits from an earlier attempt.
+
+Run:
+\`\`\`
+git log main..HEAD --oneline
+\`\`\`
+
+If there are existing commits, review what has already been done:
+\`\`\`
+git diff main...HEAD --stat
+\`\`\`
+
+Compare the existing changes against the task description above. Identify:
+1. Which parts of the task are **already implemented** by prior commits.
+2. Which parts are **still pending** and need to be done.
+3. Whether any existing work needs to be **revised or corrected** based on the
+   current task description (it may have been updated with reviewer feedback
+   since the last attempt).
+
+If the branch has no prior commits, treat this as new work.
+
+## Instructions
+
+Work on this task until it is complete. Focus your effort on what remains to be
+done — do not redo work that is already correct and complete.
 `
 
 export const DEFAULT_TEARDOWN_MD = `# Teardown: {{task.identifier}}: {{task.title}}

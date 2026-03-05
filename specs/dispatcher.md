@@ -287,17 +287,47 @@ To override, create `.switchboard/commands/agent.sh`. This is useful when:
 
 ### Default work prompt
 
-Switchboard ships a built-in default `work.md`, inlined in the TypeScript source as a string literal. It provides a minimal prompt that passes the task to the agent:
+Switchboard ships a built-in default `work.md`, inlined in the TypeScript source as a string literal. It passes the task to the agent and instructs it to assess the current branch state before starting work:
 
 ```markdown
 # {{task.identifier}}: {{task.title}}
 
 {{task.description}}
 
-Work on this task until it is complete.
+## Getting started
+
+Before writing any code, assess the current state of the branch. This task may
+be new work or a revision of previous work — the branch may already contain
+commits from an earlier attempt.
+
+Run:
+\`\`\`
+git log main..HEAD --oneline
+\`\`\`
+
+If there are existing commits, review what has already been done:
+\`\`\`
+git diff main...HEAD --stat
+\`\`\`
+
+Compare the existing changes against the task description above. Identify:
+1. Which parts of the task are **already implemented** by prior commits.
+2. Which parts are **still pending** and need to be done.
+3. Whether any existing work needs to be **revised or corrected** based on the
+   current task description (it may have been updated with reviewer feedback
+   since the last attempt).
+
+If the branch has no prior commits, treat this as new work.
+
+## Instructions
+
+Work on this task until it is complete. Focus your effort on what remains to be
+done — do not redo work that is already correct and complete.
 ```
 
-This default runs when no `.switchboard/commands/work.md` exists in the project. It gives the agent the task title and description and asks it to complete the work. Most teams will override this with a project-specific prompt that includes repo conventions, testing instructions, or other guidance.
+The default prompt is designed to handle both fresh tasks and task revisions (see **Task Revisions** below). When a task re-enters the flow, the branch already contains commits from the previous attempt. The prompt instructs the agent to use `git log` and `git diff` to assess what work exists, compare it against the (potentially updated) task description, and focus only on what remains. This prevents the agent from redoing completed work or missing reviewer feedback that arrived since the last attempt.
+
+This default runs when no `.switchboard/commands/work.md` exists in the project. Most teams will override this with a project-specific prompt that includes repo conventions, testing instructions, or other guidance.
 
 To override, create `.switchboard/commands/work.md`. Note that `work.sh` can also be used alongside or instead of `work.md` for shell-driven workflows.
 
