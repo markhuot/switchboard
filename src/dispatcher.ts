@@ -26,7 +26,7 @@ git worktree prune
 # If the branch already exists, create a worktree from it (continuing
 # previous work). Otherwise create a fresh branch.
 if git show-ref --verify --quiet "refs/heads/switchboard/$TASK_IDENTIFIER"; then
-  git worktree add "$WORKSPACE" "switchboard/$TASK_IDENTIFIER"
+  git worktree add --force "$WORKSPACE" "switchboard/$TASK_IDENTIFIER"
 else
   git worktree add "$WORKSPACE" -b "switchboard/$TASK_IDENTIFIER"
 fi

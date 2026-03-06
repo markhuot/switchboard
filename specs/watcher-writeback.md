@@ -258,7 +258,7 @@ Each watcher implementation decides what `put()` does. The orchestrator does not
 ### Jira
 
 On success:
-- Transition the issue to a "Done" status (configurable via environment variable, e.g., `JIRA_DONE_TRANSITION`).
+- Transition the issue to a "Done" status (configurable via environment variable, e.g., `JIRA_COMPLETE_TRANSITION`).
 - Use `summarize()` to generate a comment from the work log.
 
 On failure:
@@ -278,7 +278,7 @@ async function put(task: Task): Promise<void> {
   }
 
   if (task.results?.status === "complete") {
-    await transitionIssue(task.id, process.env.JIRA_DONE_TRANSITION ?? "Done")
+    await transitionIssue(task.id, process.env.JIRA_COMPLETE_TRANSITION ?? "Done")
     await addComment(task.id, summary)
   } else {
     await addComment(task.id, `Dispatch failed:\n\n${summary}`)

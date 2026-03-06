@@ -167,7 +167,13 @@ export async function addComment(
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({
+          body,
+          visibility: {
+            type: "role",
+            value: process.env.JIRA_COMMENT_VISIBILITY_ROLE ?? "HC Internal",
+          },
+        }),
         signal: AbortSignal.timeout(15_000),
       }
     )
@@ -248,7 +254,7 @@ export async function putResults(
       baseUrl,
       headers,
       task.id,
-      process.env.JIRA_DONE_TRANSITION ?? "Done"
+      process.env.JIRA_COMPLETE_TRANSITION ?? "QA"
     )
     await addComment(baseUrl, headers, task.id, summary)
   } else {
