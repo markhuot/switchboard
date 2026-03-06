@@ -1,4 +1,6 @@
 import { describe, test, expect, mock } from "bun:test"
+import { existsSync, readFileSync, rmSync } from "fs"
+import { join } from "path"
 import { createOrchestrator } from "./orchestrator"
 import type { Dispatcher, DispatchHandle, LockStore, StepResult, Task, PutContext, Watcher } from "./types"
 
@@ -74,7 +76,7 @@ describe("createOrchestrator", () => {
     const tasks = [makeTask({ id: "1" }), makeTask({ id: "2", title: "Task 2" })]
     const watcher = createMockWatcher(tasks)
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -115,7 +117,7 @@ describe("createOrchestrator", () => {
       },
     }
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -146,7 +148,7 @@ describe("createOrchestrator", () => {
       },
     }
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -172,7 +174,7 @@ describe("createOrchestrator", () => {
     }
 
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 50, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 50, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       instantDispatch
     )
@@ -201,7 +203,7 @@ describe("createOrchestrator", () => {
     }
 
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -226,7 +228,7 @@ describe("createOrchestrator", () => {
     }
 
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -249,7 +251,7 @@ describe("createOrchestrator", () => {
     }
 
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       instantDispatch
     )
@@ -265,7 +267,7 @@ describe("createOrchestrator", () => {
   test("removes tasks from inFlight after dispatch completes", async () => {
     const watcher = createMockWatcher([makeTask({ id: "1" })])
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       instantDispatch
     )
@@ -288,7 +290,7 @@ describe("createOrchestrator", () => {
     ]
     const watcher = createMockWatcher(tasks)
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 2, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 2, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -322,7 +324,7 @@ describe("createOrchestrator", () => {
       makeTask({ id: "123", identifier: "PROJ-123", title: "Identified task" }),
     ])
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -347,7 +349,7 @@ describe("createOrchestrator", () => {
 
     const watcher = createMockWatcher([makeTask({ id: "1" })])
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       instantDispatch
     )
@@ -378,7 +380,7 @@ describe("createOrchestrator", () => {
     }
 
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       dispatch
     )
@@ -408,7 +410,7 @@ describe("createOrchestrator", () => {
     }
 
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       instantDispatch
     )
@@ -429,7 +431,7 @@ describe("createOrchestrator", () => {
   test("inFlight set is exposed on return object", () => {
     const watcher = createMockWatcher([])
     const orchestrator = createOrchestrator(
-      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false },
+      { watch: "test", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 60_000, concurrency: 10, noTty: false, taskTtl: 3_600_000 },
       watcher,
       instantDispatch
     )
@@ -628,6 +630,70 @@ describe("createOrchestrator lock store", () => {
 // --- writeback tests ---
 
 describe("createOrchestrator writeback", () => {
+  test("marks task error when put() throws after successful dispatch", async () => {
+    const events: { id: string; status: string }[] = []
+    const { dispatch, complete } = newControllableDispatch()
+    const watcher: Watcher = {
+      async *fetch() {
+        yield makeTask({ id: "putfail1", title: "Put fail after success" })
+      },
+      async put(_task, _context) {
+        throw new Error("put exploded")
+      },
+    }
+    const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch)
+    orchestrator.onTaskEvent((event) => {
+      events.push({ id: event.task.id, status: event.status })
+    })
+
+    const stop = orchestrator.start()
+    await new Promise((r) => setTimeout(r, 50))
+
+    complete("putfail1")
+    await new Promise((r) => setTimeout(r, 50))
+
+    expect(events).toHaveLength(2)
+    expect(events[0]).toEqual({ id: "putfail1", status: "in_progress" })
+    expect(events[1]).toEqual({ id: "putfail1", status: "error" })
+
+    stop()
+  })
+
+  test("writes watcher.put.log and captures watcher console output", async () => {
+    const taskId = "putlog1"
+    const logRoot = join("/tmp", "test-logs", taskId)
+    rmSync(logRoot, { recursive: true, force: true })
+
+    const { dispatch, complete } = newControllableDispatch()
+    const watcher: Watcher = {
+      async *fetch() {
+        yield makeTask({ id: taskId, title: "Put logger" })
+      },
+      async put(_task, _context) {
+        console.log("writeback log line")
+        console.warn("writeback warn line")
+      },
+    }
+    const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch)
+
+    const stop = orchestrator.start()
+    await new Promise((r) => setTimeout(r, 50))
+
+    complete(taskId)
+    await new Promise((r) => setTimeout(r, 50))
+
+    const writebackLog = join(logRoot, "watcher.put.log")
+    expect(existsSync(writebackLog)).toBe(true)
+    const log = readFileSync(writebackLog, "utf-8")
+    expect(log).toContain("watcher.put start task=putlog1 status=complete")
+    expect(log).toContain("watcher.put success")
+    expect(log).toContain("console.log: writeback log line")
+    expect(log).toContain("console.warn: writeback warn line")
+
+    stop()
+    rmSync(logRoot, { recursive: true, force: true })
+  })
+
   test("calls watcher.put() after successful dispatch", async () => {
     const { dispatch, complete } = newControllableDispatch()
     const putCalls: Task[] = []
@@ -731,7 +797,13 @@ describe("createOrchestrator writeback", () => {
     expect(lockStore.releaseCalls).toHaveLength(1)
     expect(lockStore.releaseCalls[0]).toBe("throw1")
 
+    const writebackLog = join("/tmp", "test-logs", "throw1", "watcher.put.log")
+    expect(existsSync(writebackLog)).toBe(true)
+    const log = readFileSync(writebackLog, "utf-8")
+    expect(log).toContain("watcher.put error: Error: put exploded")
+
     stop()
+    rmSync(join("/tmp", "test-logs", "throw1"), { recursive: true, force: true })
   })
 
   test("task.results includes steps from dispatch", async () => {

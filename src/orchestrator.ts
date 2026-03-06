@@ -1,3 +1,5 @@
+import { appendFileSync, mkdirSync } from "fs"
+import { dirname, join } from "path"
 import type { Dispatcher, LockStore, PutContext, StepResult, SwitchboardConfig, Task, TaskResults, Watcher } from "./types"
 import { generateDispatchId } from "./dispatcher"
 
@@ -38,6 +40,80 @@ export function createOrchestrator(
   // Resolver + timer for the wait-between-polls sleep so stop() can cancel it
   let pollResolve: (() => void) | null = null
   let pollTimer: ReturnType<typeof setTimeout> | null = null
+  // Console patching for writeback capture is process-global; serialize it.
+  let writebackCaptureQueue: Promise<void> = Promise.resolve()
+
+  function stringifyConsoleArg(arg: unknown): string {
+    if (typeof arg === "string") return arg
+    if (arg instanceof Error) return arg.stack ?? `${arg.name}: ${arg.message}`
+    try {
+      return JSON.stringify(arg)
+    } catch {
+      return String(arg)
+    }
+  }
+
+  function formatError(err: unknown): string {
+    if (err instanceof Error) {
+      return err.stack ?? `${err.name}: ${err.message}`
+    }
+    return stringifyConsoleArg(err)
+  }
+
+  function appendWritebackLog(logDir: string, lines: string[]) {
+    const logPath = join(logDir, "watcher.put.log")
+    mkdirSync(dirname(logPath), { recursive: true })
+    appendFileSync(logPath, `${lines.join("\n")}\n`, "utf-8")
+  }
+
+  async function runWatcherPut(task: Task, context: PutContext): Promise<void> {
+    if (!watcher.put || !task.results) return
+
+    const run = writebackCaptureQueue.then(async () => {
+      const lines: string[] = []
+      const start = new Date().toISOString()
+      lines.push(`[${start}] watcher.put start task=${task.id} status=${task.results!.status}`)
+
+      const originalLog = console.log
+      const originalWarn = console.warn
+      const originalError = console.error
+
+      const capture = (level: "log" | "warn" | "error", args: unknown[]) => {
+        lines.push(
+          `[${new Date().toISOString()}] console.${level}: ${args.map(stringifyConsoleArg).join(" ")}`,
+        )
+      }
+
+      console.log = (...args: unknown[]) => {
+        capture("log", args)
+        originalLog(...args)
+      }
+      console.warn = (...args: unknown[]) => {
+        capture("warn", args)
+        originalWarn(...args)
+      }
+      console.error = (...args: unknown[]) => {
+        capture("error", args)
+        originalError(...args)
+      }
+
+      try {
+        await watcher.put!(task, context)
+        lines.push(`[${new Date().toISOString()}] watcher.put success`)
+      } catch (err) {
+        lines.push(`[${new Date().toISOString()}] watcher.put error: ${formatError(err)}`)
+        throw err
+      } finally {
+        console.log = originalLog
+        console.warn = originalWarn
+        console.error = originalError
+        appendWritebackLog(task.results!.logDir, lines)
+      }
+    })
+
+    writebackCaptureQueue = run.then(() => undefined, () => undefined)
+    return run
+  }
 
   function emit(task: Task, status: TaskStatus, pid?: number) {
     const event: TaskEvent = { task, status, pid }
@@ -112,7 +188,13 @@ export function createOrchestrator(
         const promptPath = join(promptDir, "summarize.md")
         writeFileSync(
           promptPath,
-          `Summarize the following agent output concisely, suitable for posting as a comment on a task tracker:\n\n${input}`,
+          [
+            "Summarize the agent output in the file below, suitable for posting as a concise comment on a task tracker.",
+            "",
+            `Read this file from disk: ${inputPath}`,
+            "",
+            "Return only the summary text.",
+          ].join("\n"),
         )
 
         // Invoke the agent via the same agent.sh mechanism
@@ -186,15 +268,19 @@ export function createOrchestrator(
                 steps,
                 "complete",
               )
-              emit(task, "complete", handle.pid)
 
-              // Call watcher.put() if available
-              if (watcher.put) {
-                try {
-                  await watcher.put(task, buildPutContext(handle.logDir, handle.output))
-                } catch {
-                  // Writeback failure -- log and continue
-                }
+              try {
+                await runWatcherPut(task, buildPutContext(handle.logDir, handle.output))
+                emit(task, "complete", handle.pid)
+              } catch {
+                // If writeback fails, treat the task as failed.
+                task.results = buildTaskResults(
+                  handle.dispatchId,
+                  handle.logDir,
+                  steps,
+                  "error",
+                )
+                emit(task, "error", handle.pid)
               }
             })
             .catch(async () => {
@@ -208,12 +294,10 @@ export function createOrchestrator(
               emit(task, "error", handle.pid)
 
               // Call watcher.put() even on failure
-              if (watcher.put) {
-                try {
-                  await watcher.put(task, buildPutContext(handle.logDir, handle.output))
-                } catch {
-                  // Writeback failure -- log and continue
-                }
+              try {
+                await runWatcherPut(task, buildPutContext(handle.logDir, handle.output))
+              } catch {
+                // The task is already marked error; keep it that way.
               }
             })
             .finally(async () => {

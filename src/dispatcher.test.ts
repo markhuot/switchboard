@@ -718,6 +718,61 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
     expect(handle.output.pr_url).toBe("https://github.com/org/repo/pull/99")
   })
 
+  test("skips teardown agent when user provides empty teardown.md", async () => {
+    writeFileSync(
+      join(commandsDir, "init.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    writeFileSync(
+      join(commandsDir, "work.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    writeFileSync(join(commandsDir, "work.md"), "\n")
+    writeFileSync(join(commandsDir, "teardown.md"), "\n")
+    writeFileSync(
+      join(commandsDir, "teardown.sh"),
+      `#!/bin/bash\necho "teardown shell" > "${projectRoot}/teardown-shell.txt"\n`
+    )
+    writeFileSync(
+      join(commandsDir, "agent.sh"),
+      `#!/bin/bash\necho "agent invoked" > "${projectRoot}/agent-invoked.txt"\n`
+    )
+
+    const config = makeConfig()
+    const dispatch = createDispatcher({ config, projectRoot })
+    const handle = dispatch(task, "a1b2c3d4")
+
+    await handle.done
+
+    expect(existsSync(join(projectRoot, "agent-invoked.txt"))).toBe(false)
+    expect(readFileSync(join(projectRoot, "teardown-shell.txt"), "utf-8").trim()).toBe("teardown shell")
+  })
+
+  test("skips default work agent when user provides empty work.md", async () => {
+    writeFileSync(
+      join(commandsDir, "init.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    writeFileSync(
+      join(commandsDir, "teardown.sh"),
+      `#!/bin/bash\n# no-op\n`
+    )
+    writeFileSync(join(commandsDir, "work.md"), "   \n\t\n")
+    writeFileSync(join(commandsDir, "teardown.md"), "\n")
+    writeFileSync(
+      join(commandsDir, "agent.sh"),
+      `#!/bin/bash\necho "agent invoked" > "${projectRoot}/agent-invoked.txt"\n`
+    )
+
+    const config = makeConfig()
+    const dispatch = createDispatcher({ config, projectRoot })
+    const handle = dispatch(task, "a1b2c3d4")
+
+    await handle.done
+
+    expect(existsSync(join(projectRoot, "agent-invoked.txt"))).toBe(false)
+  })
+
   test("uses default init.sh when no user-defined init.sh exists", async () => {
     // Use a project root outside any git repo so the default init.sh
     // (which runs `git worktree add`) genuinely fails.

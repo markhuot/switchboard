@@ -46,6 +46,29 @@ interface JiraComment {
   created: string
 }
 
+async function buildHttpErrorMessage(
+  prefix: string,
+  response: Response
+): Promise<string> {
+  let body = ""
+  try {
+    body = (await response.text()).trim()
+  } catch {
+    body = "(failed to read response body)"
+  }
+
+  if (!body) {
+    body = "(empty response body)"
+  }
+
+  const maxBodyLength = 4_000
+  if (body.length > maxBodyLength) {
+    body = `${body.slice(0, maxBodyLength)}...`
+  }
+
+  return `${prefix}: ${response.status} ${response.statusText}; response body: ${body}`
+}
+
 // --- Helpers ---
 
 export function requireEnv(name: string): string {
@@ -103,55 +126,51 @@ export async function transitionIssue(
   issueId: string,
   transitionName: string
 ): Promise<void> {
-  try {
-    const res = await fetch(
-      `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
-      {
-        method: "GET",
-        headers,
-        signal: AbortSignal.timeout(15_000),
-      }
-    )
-
-    if (!res.ok) {
-      console.warn(
-        `Failed to fetch transitions for ${issueId}: ${res.status} ${res.statusText}`
-      )
-      return
+  const res = await fetch(
+    `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
+    {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(15_000),
     }
+  )
 
-    const data: { transitions: { id: string; name: string }[] } =
-      await res.json()
+  if (!res.ok) {
+    throw new Error(await buildHttpErrorMessage(
+      `Failed to fetch transitions for ${issueId}`,
+      res
+    ))
+  }
 
-    const match = data.transitions.find(
-      (t) => t.name.toLowerCase() === transitionName.toLowerCase()
+  const data: { transitions: { id: string; name: string }[] } =
+    await res.json()
+
+  const match = data.transitions.find(
+    (t) => t.name.toLowerCase() === transitionName.toLowerCase()
+  )
+
+  if (!match) {
+    throw new Error(
+      `Transition "${transitionName}" not found for issue ${issueId}. ` +
+        `Available: ${data.transitions.map((t) => t.name).join(", ")}`
     )
+  }
 
-    if (!match) {
-      console.warn(
-        `Transition "${transitionName}" not found for issue ${issueId}. ` +
-          `Available: ${data.transitions.map((t) => t.name).join(", ")}`
-      )
-      return
+  const postRes = await fetch(
+    `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ transition: { id: match.id } }),
+      signal: AbortSignal.timeout(15_000),
     }
+  )
 
-    const postRes = await fetch(
-      `${baseUrl}/rest/api/2/issue/${issueId}/transitions`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ transition: { id: match.id } }),
-        signal: AbortSignal.timeout(15_000),
-      }
-    )
-
-    if (!postRes.ok) {
-      console.warn(
-        `Failed to transition ${issueId} to "${transitionName}": ${postRes.status} ${postRes.statusText}`
-      )
-    }
-  } catch (err) {
-    console.warn(`Error transitioning issue ${issueId}:`, err)
+  if (!postRes.ok) {
+    throw new Error(await buildHttpErrorMessage(
+      `Failed to transition ${issueId} to "${transitionName}"`,
+      postRes
+    ))
   }
 }
 
@@ -161,30 +180,27 @@ export async function addComment(
   issueId: string,
   body: string
 ): Promise<void> {
-  try {
-    const res = await fetch(
-      `${baseUrl}/rest/api/2/issue/${issueId}/comment`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          body,
-          visibility: {
-            type: "role",
-            value: process.env.JIRA_COMMENT_VISIBILITY_ROLE ?? "HC Internal",
-          },
-        }),
-        signal: AbortSignal.timeout(15_000),
-      }
-    )
-
-    if (!res.ok) {
-      console.warn(
-        `Failed to add comment to ${issueId}: ${res.status} ${res.statusText}`
-      )
+  const res = await fetch(
+    `${baseUrl}/rest/api/2/issue/${issueId}/comment`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        body,
+        visibility: {
+          type: "role",
+          value: process.env.JIRA_COMMENT_VISIBILITY_ROLE ?? "HC Internal",
+        },
+      }),
+      signal: AbortSignal.timeout(15_000),
     }
-  } catch (err) {
-    console.warn(`Error adding comment to issue ${issueId}:`, err)
+  )
+
+  if (!res.ok) {
+    throw new Error(await buildHttpErrorMessage(
+      `Failed to add comment to ${issueId}`,
+      res
+    ))
   }
 }
 
@@ -235,18 +251,25 @@ export async function putResults(
 ): Promise<void> {
   const workLogPath = join(task.results!.logDir, "work.md.log")
   let summary: string
+  let skipComment = false
 
   try {
     const workLog = readFileSync(workLogPath, "utf-8")
-    summary = await context.summarize(workLog)
+    summary = (await context.summarize(workLog)).trim()
+    if (!summary) {
+      skipComment = true
+      console.warn(
+        `Summary for Jira issue ${task.id} was empty after summarization; skipping Jira comment writeback.`
+      )
+    }
   } catch {
     summary = "(no work log available)"
   }
 
   // Append PR link if the teardown agent created one
   const prUrl = context.output.pr_url
-  if (prUrl) {
-    summary += `\n\nPull request: ${prUrl}`
+  if (prUrl && summary) {
+    summary = `${summary}\n\nPull request: ${prUrl}`
   }
 
   if (task.results?.status === "complete") {
@@ -256,9 +279,13 @@ export async function putResults(
       task.id,
       process.env.JIRA_COMPLETE_TRANSITION ?? "QA"
     )
-    await addComment(baseUrl, headers, task.id, summary)
+    if (!skipComment) {
+      await addComment(baseUrl, headers, task.id, summary)
+    }
   } else {
-    await addComment(baseUrl, headers, task.id, `Dispatch failed:\n\n${summary}`)
+    if (!skipComment) {
+      await addComment(baseUrl, headers, task.id, `Dispatch failed:\n\n${summary}`)
+    }
   }
 }
 

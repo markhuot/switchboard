@@ -287,6 +287,10 @@ interface ResolvedCommands {
 
 type CommandFile = keyof ResolvedCommands
 
+function hasStepContent(content: string | null): content is string {
+  return content != null && content.trim().length > 0
+}
+
 function resolveCommands(commandsDir: string, projectRoot: string): ResolvedCommands {
   const absDir = resolve(projectRoot, commandsDir)
 
@@ -525,45 +529,55 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
       })
 
       // --- Init phase ---
+      const initSh = commands["init.sh"]
+      const initMd = commands["init.md"]
       try {
         // init.sh
-        if (commands["init.sh"]) {
+        const hasInitSh = hasStepContent(initSh)
+        const hasInitMd = hasStepContent(initMd)
+
+        if (hasInitSh) {
           // init.sh always runs in project root
           const ctx = makeCtx()
           ctx.cwd = opts.projectRoot
-          await runStep(commands["init.sh"], "init.sh", ctx)
+          await runStep(initSh, "init.sh", ctx)
           steps.push({ name: "init.sh", exitCode: 0 })
         }
 
         // init.md
-        if (commands["init.md"]) {
-          await runStep(commands["init.md"], "init.md", makeCtx())
+        if (hasInitMd) {
+          await runStep(initMd, "init.md", makeCtx())
           steps.push({ name: "init.md", exitCode: 0 })
         }
       } catch (err) {
         const exitCode = extractExitCode(err)
-        const lastStepName = commands["init.md"] ? "init.md" : "init.sh"
+        const lastStepName = hasStepContent(initMd) ? "init.md" : "init.sh"
         steps.push({ name: lastStepName, exitCode })
         initFailed = true
       }
 
       // --- Work phase (skip if init failed) ---
+      const workSh = commands["work.sh"]
+      const workMd = commands["work.md"]
       if (!initFailed) {
         try {
+          const hasWorkSh = hasStepContent(workSh)
+          const hasWorkMd = hasStepContent(workMd)
+
           // work.sh
-          if (commands["work.sh"]) {
-            await runStep(commands["work.sh"], "work.sh", makeCtx())
+          if (hasWorkSh) {
+            await runStep(workSh, "work.sh", makeCtx())
             steps.push({ name: "work.sh", exitCode: 0 })
           }
 
           // work.md
-          if (commands["work.md"]) {
-            await runStep(commands["work.md"], "work.md", makeCtx())
+          if (hasWorkMd) {
+            await runStep(workMd, "work.md", makeCtx())
             steps.push({ name: "work.md", exitCode: 0 })
           }
         } catch (err) {
           const exitCode = extractExitCode(err)
-          const lastStepName = commands["work.md"] ? "work.md" : "work.sh"
+          const lastStepName = hasStepContent(workMd) ? "work.md" : "work.sh"
           steps.push({ name: lastStepName, exitCode })
           workFailed = true
         }
@@ -571,21 +585,26 @@ export function createDispatcher({ config, projectRoot }: DispatcherConfig): Dis
 
       // --- Teardown phase (always runs) ---
       let teardownFailed = false
+      const teardownMd = commands["teardown.md"]
+      const teardownSh = commands["teardown.sh"]
       try {
+        const hasTeardownMd = hasStepContent(teardownMd)
+        const hasTeardownSh = hasStepContent(teardownSh)
+
         // teardown.md (agent goes first in teardown)
-        if (commands["teardown.md"]) {
-          await runStep(commands["teardown.md"], "teardown.md", makeCtx())
+        if (hasTeardownMd) {
+          await runStep(teardownMd, "teardown.md", makeCtx())
           steps.push({ name: "teardown.md", exitCode: 0 })
         }
 
         // teardown.sh
-        if (commands["teardown.sh"]) {
-          await runStep(commands["teardown.sh"], "teardown.sh", makeCtx())
+        if (hasTeardownSh) {
+          await runStep(teardownSh, "teardown.sh", makeCtx())
           steps.push({ name: "teardown.sh", exitCode: 0 })
         }
       } catch (err) {
         const exitCode = extractExitCode(err)
-        const lastStepName = commands["teardown.sh"] ? "teardown.sh" : "teardown.md"
+        const lastStepName = hasStepContent(teardownSh) ? "teardown.sh" : "teardown.md"
         steps.push({ name: lastStepName, exitCode })
         teardownFailed = true
       }
