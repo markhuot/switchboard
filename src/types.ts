@@ -68,16 +68,16 @@ export interface Task {
 
   /**
    * Dispatch results. Undefined when the task is yielded by fetch().
-   * Populated by the orchestrator before calling put().
+   * Populated by the orchestrator before calling complete().
    */
   results?: TaskResults
 }
 
 /**
- * Context passed to `Watcher.put()` by the orchestrator, providing
+ * Context passed to `Watcher.complete()` by the orchestrator, providing
  * capabilities that watchers may need when writing back results.
  */
-export interface PutContext {
+export interface CompleteContext {
   /**
    * Invoke the configured agent to produce a concise summary of the
    * given input text (e.g. a work log). Useful for posting human-readable
@@ -97,6 +97,18 @@ export interface PutContext {
   output: Record<string, string>
 }
 
+/**
+ * Context passed to `Watcher.update()` by the orchestrator before dispatch
+ * starts.
+ */
+export interface UpdateContext {
+  /** Dispatch ID for the upcoming attempt. */
+  dispatchId: string
+
+  /** Absolute path where Switchboard will write logs for this dispatch. */
+  logDir: string
+}
+
 export interface Watcher {
   /**
    * Yields tasks one at a time as an async generator. The orchestrator
@@ -111,6 +123,16 @@ export interface Watcher {
   fetch(): AsyncGenerator<Task>
 
   /**
+   * Write in-progress task state back to the source. Called by the
+   * orchestrator before dispatch starts.
+   *
+   * Optional. Watchers that do not support in-progress writeback
+   * omit this method. The orchestrator checks for its existence
+   * before calling.
+   */
+  update?(task: Task, context: UpdateContext): Promise<void>
+
+  /**
    * Write a completed task back to the source. Called by the
    * orchestrator after dispatch finishes (success or failure).
    *
@@ -120,7 +142,7 @@ export interface Watcher {
    * Optional. Watchers that do not support writeback omit this method.
    * The orchestrator checks for its existence before calling.
    */
-  put?(task: Task, context: PutContext): Promise<void>
+  complete?(task: Task, context: CompleteContext): Promise<void>
 }
 
 /**
@@ -132,7 +154,8 @@ export interface Watcher {
 export interface WatcherFactoryContext {
   /**
    * Instantiate a built-in watcher by name. The returned watcher is
-   * fully constructed and ready to use — its fetch() and put() methods
+   * fully constructed and ready to use — its fetch(), update(), and
+   * complete() methods
    * work the same as if it were loaded directly via --watch=<name>.
    *
    * Useful for external watcher modules that want to wrap or extend a

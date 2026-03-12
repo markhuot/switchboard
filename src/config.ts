@@ -1,6 +1,11 @@
 import { fonts } from "@opentui/core"
 import os from "os"
 import type { SwitchboardConfig } from "./types"
+import { BUILTIN_WATCHERS } from "./watcher"
+
+export type HelpAction =
+  | { kind: "main" }
+  | { kind: "watcher"; watcher: string }
 
 /**
  * Format milliseconds into a human-readable elapsed duration.
@@ -73,7 +78,8 @@ export function renderAsciiText(text: string): string {
 /**
  * Print full CLI help text to stdout.
  */
-function printHelp(): void {
+export function printMainHelp(): void {
+  const builtinWatchers = BUILTIN_WATCHERS.join(", ")
   console.log(`${renderAsciiText("Switchboard")}
 
 Switchboard — a composable task orchestrator for coding agents
@@ -83,7 +89,7 @@ Usage:
 
 Required:
   --watch=<source>          Task source to poll for work.
-                            Built-in:  jira, github, linear, file, shell
+                            Built-in:  ${builtinWatchers}
                             Module:    ./path/to/watcher.ts
                             Shell:     "$ <command>"
 
@@ -115,6 +121,9 @@ Options:
   -h, --help                Show this help message and exit.
 
 Commands:
+  switchboard help                Show this help message.
+  switchboard help watcher <name|./watcher.ts|"$ command">
+                                  Show watcher-specific help.
   switchboard export [category]   Export default files for customization.
                                   Run "switchboard export --help" for details.
 
@@ -124,6 +133,28 @@ Examples:
   switchboard --watch=./watcher.ts --agent=./agents/my-agent --concurrency=4
   switchboard --watch="$ curl -s https://api.example.com/tasks" --agent=opencode
   CI=true switchboard --watch=jira --agent=opencode`)
+}
+
+export function parseHelpAction(argv: string[]): HelpAction | null {
+  if (argv[2] !== "help") return null
+
+  if (argv.length === 3) {
+    return { kind: "main" }
+  }
+
+  if (argv[3] === "watcher") {
+    const watcher = argv.slice(4).join(" ").trim()
+    if (!watcher) {
+      throw new Error(
+        'Missing watcher name. Usage: switchboard help watcher <name|./watcher.ts|"$ command">'
+      )
+    }
+    return { kind: "watcher", watcher }
+  }
+
+  throw new Error(
+    `Unknown help topic: "${argv[3]}". Supported: watcher`
+  )
 }
 
 /**
@@ -141,7 +172,7 @@ export function parseArgs(argv: string[]): SwitchboardConfig {
 
   for (const arg of argv.slice(2)) {
     if (arg === "--help" || arg === "-h") {
-      printHelp()
+      printMainHelp()
       process.exit(0)
     } else if (arg.startsWith("--watch=")) {
       watch = arg.slice("--watch=".length)

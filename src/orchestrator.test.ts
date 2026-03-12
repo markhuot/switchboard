@@ -2,7 +2,7 @@ import { describe, test, expect, mock } from "bun:test"
 import { existsSync, readFileSync, rmSync } from "fs"
 import { join } from "path"
 import { createOrchestrator } from "./orchestrator"
-import type { Dispatcher, DispatchHandle, LockStore, StepResult, Task, PutContext, Watcher } from "./types"
+import type { CompleteContext, Dispatcher, DispatchHandle, LockStore, StepResult, Task, Watcher } from "./types"
 
 // --- helpers ---
 
@@ -93,7 +93,7 @@ describe("createOrchestrator", () => {
     stop()
   })
 
-  test("passes handle.output to put() via context.output", async () => {
+  test("passes handle.output to complete() via context.output", async () => {
     const resolvers = new Map<string, (steps: StepResult[]) => void>()
     let fakePid = 80000
 
@@ -107,13 +107,13 @@ describe("createOrchestrator", () => {
       return { pid: ++fakePid, dispatchId, logDir, done, output }
     }
 
-    const putContexts: PutContext[] = []
+    const completeContexts: CompleteContext[] = []
     const watcher: Watcher = {
       async *fetch() {
         yield makeTask({ id: "out1", title: "Output task" })
       },
-      async put(_task, context) {
-        putContexts.push(context)
+      async complete(_task, context) {
+        completeContexts.push(context)
       },
     }
     const orchestrator = createOrchestrator(
@@ -129,8 +129,8 @@ describe("createOrchestrator", () => {
     if (resolve) resolve([])
     await new Promise((r) => setTimeout(r, 50))
 
-    expect(putContexts).toHaveLength(1)
-    expect(putContexts[0].output).toEqual({
+    expect(completeContexts).toHaveLength(1)
+    expect(completeContexts[0].output).toEqual({
       pr_url: "https://github.com/org/repo/pull/42",
       custom: "value",
     })
@@ -630,15 +630,15 @@ describe("createOrchestrator lock store", () => {
 // --- writeback tests ---
 
 describe("createOrchestrator writeback", () => {
-  test("marks task error when put() throws after successful dispatch", async () => {
+  test("marks task error when complete() throws after successful dispatch", async () => {
     const events: { id: string; status: string }[] = []
     const { dispatch, complete } = newControllableDispatch()
     const watcher: Watcher = {
       async *fetch() {
         yield makeTask({ id: "putfail1", title: "Put fail after success" })
       },
-      async put(_task, _context) {
-        throw new Error("put exploded")
+      async complete(_task, _context) {
+        throw new Error("complete exploded")
       },
     }
     const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch)
@@ -659,7 +659,7 @@ describe("createOrchestrator writeback", () => {
     stop()
   })
 
-  test("writes watcher.put.log and captures watcher console output", async () => {
+  test("writes watcher.complete.log and captures watcher console output", async () => {
     const taskId = "putlog1"
     const logRoot = join("/tmp", "test-logs", taskId)
     rmSync(logRoot, { recursive: true, force: true })
@@ -669,7 +669,7 @@ describe("createOrchestrator writeback", () => {
       async *fetch() {
         yield makeTask({ id: taskId, title: "Put logger" })
       },
-      async put(_task, _context) {
+      async complete(_task, _context) {
         console.log("writeback log line")
         console.warn("writeback warn line")
       },
@@ -682,11 +682,11 @@ describe("createOrchestrator writeback", () => {
     complete(taskId)
     await new Promise((r) => setTimeout(r, 50))
 
-    const writebackLog = join(logRoot, "watcher.put.log")
+    const writebackLog = join(logRoot, "watcher.complete.log")
     expect(existsSync(writebackLog)).toBe(true)
     const log = readFileSync(writebackLog, "utf-8")
-    expect(log).toContain("watcher.put start task=putlog1 status=complete")
-    expect(log).toContain("watcher.put success")
+    expect(log).toContain("watcher.complete start task=putlog1 status=complete")
+    expect(log).toContain("watcher.complete success")
     expect(log).toContain("console.log: writeback log line")
     expect(log).toContain("console.warn: writeback warn line")
 
@@ -694,15 +694,15 @@ describe("createOrchestrator writeback", () => {
     rmSync(logRoot, { recursive: true, force: true })
   })
 
-  test("calls watcher.put() after successful dispatch", async () => {
+  test("calls watcher.complete() after successful dispatch", async () => {
     const { dispatch, complete } = newControllableDispatch()
-    const putCalls: Task[] = []
+    const completeCalls: Task[] = []
     const watcher: Watcher = {
       async *fetch() {
         yield makeTask({ id: "wb1", title: "Writeback task" })
       },
-      async put(task, _context) {
-        putCalls.push(task)
+      async complete(task, _context) {
+        completeCalls.push(task)
       },
     }
     const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch)
@@ -713,26 +713,26 @@ describe("createOrchestrator writeback", () => {
     complete("wb1", [{ name: "init.sh", exitCode: 0 }])
     await new Promise((r) => setTimeout(r, 50))
 
-    expect(putCalls).toHaveLength(1)
-    expect(putCalls[0].id).toBe("wb1")
-    expect(putCalls[0].results).toBeDefined()
-    expect(putCalls[0].results!.status).toBe("complete")
-    expect(putCalls[0].results!.dispatchId).toMatch(/^[0-9a-f]{8}$/)
-    expect(putCalls[0].results!.logDir).toBe("/tmp/test-logs/wb1")
-    expect(putCalls[0].results!.steps).toEqual([{ name: "init.sh", exitCode: 0 }])
+    expect(completeCalls).toHaveLength(1)
+    expect(completeCalls[0].id).toBe("wb1")
+    expect(completeCalls[0].results).toBeDefined()
+    expect(completeCalls[0].results!.status).toBe("complete")
+    expect(completeCalls[0].results!.dispatchId).toMatch(/^[0-9a-f]{8}$/)
+    expect(completeCalls[0].results!.logDir).toBe("/tmp/test-logs/wb1")
+    expect(completeCalls[0].results!.steps).toEqual([{ name: "init.sh", exitCode: 0 }])
 
     stop()
   })
 
-  test("calls watcher.put() after failed dispatch", async () => {
+  test("calls watcher.complete() after failed dispatch", async () => {
     const { dispatch, fail } = newControllableDispatch()
-    const putCalls: Task[] = []
+    const completeCalls: Task[] = []
     const watcher: Watcher = {
       async *fetch() {
         yield makeTask({ id: "fail1", title: "Failing task" })
       },
-      async put(task, _context) {
-        putCalls.push(task)
+      async complete(task, _context) {
+        completeCalls.push(task)
       },
     }
     const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch)
@@ -743,24 +743,24 @@ describe("createOrchestrator writeback", () => {
     fail("fail1")
     await new Promise((r) => setTimeout(r, 50))
 
-    expect(putCalls).toHaveLength(1)
-    expect(putCalls[0].id).toBe("fail1")
-    expect(putCalls[0].results).toBeDefined()
-    expect(putCalls[0].results!.status).toBe("error")
-    expect(putCalls[0].results!.dispatchId).toMatch(/^[0-9a-f]{8}$/)
-    expect(putCalls[0].results!.logDir).toBe("/tmp/test-logs/fail1")
-    expect(putCalls[0].results!.steps).toEqual([])
+    expect(completeCalls).toHaveLength(1)
+    expect(completeCalls[0].id).toBe("fail1")
+    expect(completeCalls[0].results).toBeDefined()
+    expect(completeCalls[0].results!.status).toBe("error")
+    expect(completeCalls[0].results!.dispatchId).toMatch(/^[0-9a-f]{8}$/)
+    expect(completeCalls[0].results!.logDir).toBe("/tmp/test-logs/fail1")
+    expect(completeCalls[0].results!.steps).toEqual([])
 
     stop()
   })
 
-  test("does not call put() when watcher lacks put method", async () => {
+  test("does not call complete() when watcher lacks complete method", async () => {
     const dispatch = newInstantDispatch()
     const watcher: Watcher = {
       async *fetch() {
-        yield makeTask({ id: "noput1", title: "No put" })
+        yield makeTask({ id: "noput1", title: "No complete" })
       },
-      // no put method
+      // no complete method
     }
     const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch)
 
@@ -773,15 +773,15 @@ describe("createOrchestrator writeback", () => {
     stop()
   })
 
-  test("handles put() throwing gracefully", async () => {
+  test("handles complete() throwing gracefully", async () => {
     const { dispatch, complete } = newControllableDispatch()
     const lockStore = createMockLockStore(true)
     const watcher: Watcher = {
       async *fetch() {
-        yield makeTask({ id: "throw1", title: "Throwing put" })
+        yield makeTask({ id: "throw1", title: "Throwing complete" })
       },
-      async put(_task, _context) {
-        throw new Error("put exploded")
+      async complete(_task, _context) {
+        throw new Error("complete exploded")
       },
     }
     const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch, lockStore)
@@ -797,10 +797,10 @@ describe("createOrchestrator writeback", () => {
     expect(lockStore.releaseCalls).toHaveLength(1)
     expect(lockStore.releaseCalls[0]).toBe("throw1")
 
-    const writebackLog = join("/tmp", "test-logs", "throw1", "watcher.put.log")
+    const writebackLog = join("/tmp", "test-logs", "throw1", "watcher.complete.log")
     expect(existsSync(writebackLog)).toBe(true)
     const log = readFileSync(writebackLog, "utf-8")
-    expect(log).toContain("watcher.put error: Error: put exploded")
+    expect(log).toContain("watcher.complete error: Error: complete exploded")
 
     stop()
     rmSync(join("/tmp", "test-logs", "throw1"), { recursive: true, force: true })
@@ -808,13 +808,13 @@ describe("createOrchestrator writeback", () => {
 
   test("task.results includes steps from dispatch", async () => {
     const { dispatch, complete } = newControllableDispatch()
-    const putCalls: Task[] = []
+    const completeCalls: Task[] = []
     const watcher: Watcher = {
       async *fetch() {
         yield makeTask({ id: "steps1", title: "Steps task" })
       },
-      async put(task, _context) {
-        putCalls.push(task)
+      async complete(task, _context) {
+        completeCalls.push(task)
       },
     }
     const orchestrator = createOrchestrator(defaultConfig, watcher, dispatch)
@@ -830,9 +830,9 @@ describe("createOrchestrator writeback", () => {
     complete("steps1", steps)
     await new Promise((r) => setTimeout(r, 50))
 
-    expect(putCalls).toHaveLength(1)
-    expect(putCalls[0].results).toBeDefined()
-    expect(putCalls[0].results!.steps).toEqual(steps)
+    expect(completeCalls).toHaveLength(1)
+    expect(completeCalls[0].results).toBeDefined()
+    expect(completeCalls[0].results!.steps).toEqual(steps)
 
     stop()
   })

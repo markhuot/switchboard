@@ -12,6 +12,12 @@ set -euo pipefail
 
 WORKSPACE=".switchboard/workspaces/$TASK_IDENTIFIER"
 
+# Allow switchboard to run when git is unavailable or this is not a repository.
+if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "##switchboard:cwd=$SWITCHBOARD_PROJECT_ROOT"
+  exit 0
+fi
+
 # If the workspace directory already exists, assume a previous attempt
 # failed partway through. Reuse it and pick up where we left off.
 if [ -d "$WORKSPACE" ]; then
@@ -41,6 +47,11 @@ set -euo pipefail
 # relying on $(pwd). If init failed partway through, teardown may still
 # be running in the project root -- $(pwd) would point at the wrong place.
 WORKSPACE="$SWITCHBOARD_PROJECT_ROOT/.switchboard/workspaces/$TASK_IDENTIFIER"
+
+# No git cleanup is needed when git is unavailable or this is not a repository.
+if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  exit 0
+fi
 
 # If the workspace directory does not exist, init never got far enough to
 # create it (or it was never needed). Nothing to clean up.
@@ -106,14 +117,22 @@ Before writing any code, assess the current state of the branch. This task may
 be new work or a revision of previous work — the branch may already contain
 commits from an earlier attempt.
 
-Run:
+Find the original branch this task branch was created from (fallback to \
+\`main\` if it cannot be determined):
 \`\`\`
-git log main..HEAD --oneline
+BASE_BRANCH="$(git reflog show "$(git branch --show-current)" --grep-reflog='branch: Created from' --format='%gs' 2>/dev/null | awk -F ' from ' 'NR==1 { print $2 }')"
+BASE_BRANCH="\${BASE_BRANCH:-main}"
+echo "$BASE_BRANCH"
+\`\`\`
+
+Then compare against that branch:
+\`\`\`
+git log "$BASE_BRANCH"..HEAD --oneline
 \`\`\`
 
 If there are existing commits, review what has already been done:
 \`\`\`
-git diff main...HEAD --stat
+git diff "$BASE_BRANCH"...HEAD --stat
 \`\`\`
 
 Compare the existing changes against the task description above. Identify:
@@ -134,7 +153,7 @@ done — do not redo work that is already correct and complete.
 export const DEFAULT_TEARDOWN_MD = `# Teardown: {{task.identifier}}: {{task.title}}
 
 You are packaging completed work for human review. Your job is to commit any
-outstanding changes, push the branch, and open or update a pull request.
+outstanding changes, then deliver the branch in the best way available for this repository.
 
 ## Instructions
 
@@ -144,18 +163,32 @@ outstanding changes, push the branch, and open or update a pull request.
    captured. Use \`git add -A && git commit\` with a descriptive message. It is
    fine to commit work-in-progress; the point is to preserve it for review.
 
-2. Review the changes on the current branch using \`git log\` and \`git diff main\`
-   to understand what was accomplished.
+2. Determine the original branch this task branch was created from (fallback to
+   \`main\` if it cannot be determined):
+   \`\`\`
+   BASE_BRANCH="$(git reflog show "$(git branch --show-current)" --grep-reflog='branch: Created from' --format='%gs' 2>/dev/null | awk -F ' from ' 'NR==1 { print $2 }')"
+   BASE_BRANCH="\${BASE_BRANCH:-main}"
+   \`\`\`
 
-3. If there are meaningful commits that would benefit from human review — even if
-   the work is not fully complete — push the branch and open or update a pull request:
+3. Review the changes on the current branch using \`git log\` and \`git diff\`
+   to understand what was accomplished:
+   \`\`\`
+   git log "$BASE_BRANCH"..HEAD --oneline
+   git diff "$BASE_BRANCH"...HEAD --stat
+   \`\`\`
 
-   a. Push the branch to the remote:
+4. If there are meaningful commits that would benefit from human review — even if
+   the work is not fully complete — try to deliver them in this order of preference:
+
+   a. **Try to push the branch to a remote** (for example \`origin\`):
       \`\`\`
       git push -u origin "switchboard/{{task.identifier}}"
       \`\`\`
 
-   b. Check if a pull request already exists for this branch:
+      If no remote exists, authentication is missing, or push fails for policy reasons,
+      do not fail teardown. Keep the committed work on the local branch and continue.
+
+   b. If push succeeds **and** GitHub CLI is available, check if a pull request already exists for this branch:
       \`\`\`
       gh pr view "switchboard/{{task.identifier}}" --json url --jq '.url'
       \`\`\`
@@ -169,11 +202,11 @@ outstanding changes, push the branch, and open or update a pull request.
 
    d. If no PR exists, create one with a clear, descriptive summary of the changes:
       \`\`\`
-      gh pr create \\
-        --title "{{task.identifier}}: {{task.title}}" \\
-        --body "<description of changes>" \\
-        --base main
-      \`\`\`
+       gh pr create \\
+         --title "{{task.identifier}}: {{task.title}}" \\
+         --body "<description of changes>" \\
+         --base "$BASE_BRANCH"
+       \`\`\`
 
    e. After creating or updating the PR, include the following directive on its own
       line in your response (this is how Switchboard captures the PR URL):
@@ -181,8 +214,11 @@ outstanding changes, push the branch, and open or update a pull request.
       ##switchboard:pr_url=<the PR URL>
       \`\`\`
 
-4. If there are no meaningful changes (e.g., the branch has no new commits ahead
-   of main and no uncommitted changes), skip PR creation.
+      If \`gh\` is unavailable, the repository host is not GitHub, or PR creation is not supported,
+      skip PR creation and do not emit \`##switchboard:pr_url\`.
+
+5. If there are no meaningful changes (e.g., the branch has no new commits ahead
+   of its original branch and no uncommitted changes), skip PR creation.
 `
 
 // ---------------------------------------------------------------------------

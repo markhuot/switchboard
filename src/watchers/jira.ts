@@ -1,6 +1,24 @@
 import { readFileSync } from "fs"
 import { join } from "path"
-import type { SwitchboardConfig, Task, PutContext, Watcher } from "../types"
+import type { CompleteContext, SwitchboardConfig, Task, Watcher } from "../types"
+
+export function help(): string {
+  return `Watcher: jira
+
+Polls Jira issues using JQL.
+
+Required environment variables:
+  JIRA_BASE_URL             Jira base URL, e.g. https://acme.atlassian.net
+  JIRA_TOKEN                Bearer token used for Jira API requests
+  JIRA_WATCH_COLUMN         Jira status/column to poll from
+  JIRA_DOING_COLUMN         Jira status/column to move to on dispatch start
+  JIRA_DONE_COLUMN          Jira status/column to move to on successful completion
+
+Optional environment variables:
+  JIRA_JQL                  Override JQL query used to select tasks
+  JIRA_COMMENT_VISIBILITY_ROLE
+                             Jira role used for comment visibility (default: HC Internal)`
+}
 
 // --- Internal types ---
 
@@ -247,7 +265,8 @@ export async function putResults(
   baseUrl: string,
   headers: Record<string, string>,
   task: Task,
-  context: PutContext
+  context: CompleteContext,
+  doneColumn: string,
 ): Promise<void> {
   const workLogPath = join(task.results!.logDir, "work.md.log")
   let summary: string
@@ -277,7 +296,7 @@ export async function putResults(
       baseUrl,
       headers,
       task.id,
-      process.env.JIRA_COMPLETE_TRANSITION ?? "QA"
+      doneColumn,
     )
     if (!skipComment) {
       await addComment(baseUrl, headers, task.id, summary)
@@ -296,18 +315,33 @@ export function buildHeaders(token: string): Record<string, string> {
   }
 }
 
+function quoteJqlValue(value: string): string {
+  return `"${value.replaceAll(/(["\\])/g, "\\$1")}"`
+}
+
+export function buildWatchJql(watchColumn: string): string {
+  return `status = ${quoteJqlValue(watchColumn)} ORDER BY priority ASC, created ASC`
+}
+
 // --- Watcher factory ---
 
 export default function createWatcher(_config: SwitchboardConfig): Watcher {
   const baseUrl = requireEnv("JIRA_BASE_URL")
   const token = requireEnv("JIRA_TOKEN")
-  const jql = requireEnv("JIRA_JQL")
+  const watchColumn = requireEnv("JIRA_WATCH_COLUMN")
+  const doingColumn = requireEnv("JIRA_DOING_COLUMN")
+  const doneColumn = requireEnv("JIRA_DONE_COLUMN")
+  const jql = process.env.JIRA_JQL ?? buildWatchJql(watchColumn)
   const headers = buildHeaders(token)
 
   return {
     fetch: () => fetchIssues(baseUrl, headers, jql),
 
-    put: (task: Task, context: PutContext) =>
-      putResults(baseUrl, headers, task, context),
+    update: async (task: Task) => {
+      await transitionIssue(baseUrl, headers, task.id, doingColumn)
+    },
+
+    complete: (task: Task, context: CompleteContext) =>
+      putResults(baseUrl, headers, task, context, doneColumn),
   }
 }

@@ -1,6 +1,19 @@
-import type { SwitchboardConfig, Watcher, Task, PutContext } from "../types"
+import type { CompleteContext, SwitchboardConfig, Watcher, Task } from "../types"
 import { appendFileSync, createReadStream } from "fs"
 import { join, parse as parsePath } from "path"
+
+export function help(): string {
+  return `Watcher: file
+
+Reads tasks from an NDJSON file, FIFO, or Unix socket.
+
+Required environment variables:
+  WATCHER_FILE              Path to NDJSON source
+
+Optional environment variables:
+  WATCHER_FILE_COMPLETE     Path to completed NDJSON log
+                            Default: sibling file <name>-completed.<ext>`
+}
 
 /**
  * Normalize a raw object from NDJSON into a Task, or null if invalid.
@@ -148,7 +161,7 @@ export default function createWatcher(_config: SwitchboardConfig): Watcher {
       }
     },
 
-    async put(task: Task, _context: PutContext): Promise<void> {
+    async complete(task: Task, _context: CompleteContext): Promise<void> {
       // Task is a pure DTO — JSON.stringify works cleanly.
       appendFileSync(completedPath, JSON.stringify(task) + "\n")
     },

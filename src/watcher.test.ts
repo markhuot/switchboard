@@ -1,7 +1,12 @@
 import { describe, test, expect, mock } from "bun:test"
 import { resolveWatcher } from "./watcher"
 import type { Task } from "./types"
-import { mkdirSync, writeFileSync, unlinkSync, readFileSync, existsSync } from "fs"
+import { mkdirSync, writeFileSync, unlinkSync, readFileSync, existsSync, rmSync } from "fs"
+
+const HELP_EXPORT_SNIPPET = `
+export function help() {
+  return "test watcher help"
+}`
 
 // --- resolveWatcher ---
 
@@ -57,7 +62,8 @@ describe("resolveWatcher", () => {
             yield { id: "mod-1", title: "Dot-slash module", description: null, url: null, priority: null }
           },
         }
-      }`
+      }
+      ${HELP_EXPORT_SNIPPET}`
     )
 
     const watcher = await resolveWatcher({
@@ -87,7 +93,8 @@ describe("resolveWatcher", () => {
             yield { id: "sub-1", title: "Sub module", description: null, url: null, priority: null }
           },
         }
-      }`
+      }
+      ${HELP_EXPORT_SNIPPET}`
     )
 
     const watcher = await resolveWatcher({
@@ -123,7 +130,8 @@ describe("resolveWatcher", () => {
             }
           },
         }
-      }`
+      }
+      ${HELP_EXPORT_SNIPPET}`
     )
 
     const watcher = await resolveWatcher({
@@ -146,7 +154,9 @@ describe("resolveWatcher", () => {
   test("built-in mode: resolves 'jira' to the jira watcher", async () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     const originalFetch = globalThis.fetch
     globalThis.fetch = mock(async () =>
@@ -176,7 +186,9 @@ describe("resolveWatcher", () => {
       globalThis.fetch = originalFetch
       delete process.env.JIRA_BASE_URL
       delete process.env.JIRA_TOKEN
-      delete process.env.JIRA_JQL
+      delete process.env.JIRA_WATCH_COLUMN
+      delete process.env.JIRA_DOING_COLUMN
+      delete process.env.JIRA_DONE_COLUMN
     }
   })
 
@@ -212,7 +224,7 @@ describe("resolveWatcher", () => {
 
     expect(exitCode).toBe(1)
     expect(errors.some((msg) => msg.includes('Unknown built-in watcher: "nonexistent"'))).toBe(true)
-    expect(errors.some((msg) => msg.includes("Available: linear, github, jira, shell, file"))).toBe(true)
+    expect(errors.some((msg) => msg.includes("Available: linear, github, jira, shell, file, trackdown"))).toBe(true)
   })
 
   test("built-in mode: lists all available watchers in error message", async () => {
@@ -468,7 +480,8 @@ describe("resolveWatcher", () => {
             yield { id: "parent-1", title: "Parent path module", description: null, url: null, priority: null }
           },
         }
-      }`
+      }
+      ${HELP_EXPORT_SNIPPET}`
     )
 
     // Use a relative path with ".." -- we go from src/ up to project root then into .tmp/
@@ -488,9 +501,9 @@ describe("resolveWatcher", () => {
     expect(tasks[0].id).toBe("parent-1")
   })
 
-  // -- File watcher put() and completed-file filtering --
+  // -- File watcher complete() and completed-file filtering --
 
-  test("file watcher put() appends to the completed file without modifying the source", async () => {
+  test("file watcher complete() appends to the completed file without modifying the source", async () => {
     mkdirSync(".tmp", { recursive: true })
     const filePath = ".tmp/put-basic.ndjson"
     const completedPath = ".tmp/put-basic-completed.ndjson"
@@ -512,13 +525,13 @@ describe("resolveWatcher", () => {
         noTty: false,
       })
 
-      await watcher.put!({
+      await watcher.complete!({
         id: "b",
         title: "Task B",
         description: null,
         url: null,
         priority: null,
-      }, { summarize: async () => "" })
+      }, { summarize: async () => "", output: {} })
 
       // Source file must be untouched
       expect(readFileSync(filePath, "utf-8")).toBe(originalContent)
@@ -575,7 +588,7 @@ describe("resolveWatcher", () => {
     }
   })
 
-  test("file watcher put() then fetch() round-trip skips completed tasks", async () => {
+  test("file watcher complete() then fetch() round-trip skips completed tasks", async () => {
     mkdirSync(".tmp", { recursive: true })
     const filePath = ".tmp/put-fetch-rt.ndjson"
     const completedPath = ".tmp/put-fetch-rt-completed.ndjson"
@@ -600,9 +613,9 @@ describe("resolveWatcher", () => {
       })
 
       // Complete tasks 1 and 3
-      const mockCtx = { summarize: async () => "" }
-      await watcher.put!({ id: "1", title: "First", description: null, url: null, priority: null }, mockCtx)
-      await watcher.put!({ id: "3", title: "Third", description: null, url: null, priority: null }, mockCtx)
+      const mockCtx = { summarize: async () => "", output: {} }
+      await watcher.complete!({ id: "1", title: "First", description: null, url: null, priority: null }, mockCtx)
+      await watcher.complete!({ id: "3", title: "Third", description: null, url: null, priority: null }, mockCtx)
 
       // Next fetch should only yield task 2
       const tasks: Task[] = []
@@ -625,7 +638,7 @@ describe("resolveWatcher", () => {
     }
   })
 
-  test("file watcher put() includes results metadata in completed file", async () => {
+  test("file watcher complete() includes results metadata in completed file", async () => {
     mkdirSync(".tmp", { recursive: true })
     const filePath = ".tmp/put-results.ndjson"
     const completedPath = ".tmp/put-results-completed.ndjson"
@@ -642,9 +655,9 @@ describe("resolveWatcher", () => {
         noTty: false,
       })
 
-      const mockContext = { summarize: async () => "summary" }
+      const mockContext = { summarize: async () => "summary", output: {} }
 
-      await watcher.put!({
+      await watcher.complete!({
         id: "r1",
         title: "With results",
         description: null,
@@ -691,7 +704,7 @@ describe("resolveWatcher", () => {
         noTty: false,
       })
 
-      await watcher.put!({ id: "x", title: "Task X", description: null, url: null, priority: null }, { summarize: async () => "" })
+      await watcher.complete!({ id: "x", title: "Task X", description: null, url: null, priority: null }, { summarize: async () => "", output: {} })
 
       // Should write to the custom path, not the derived one
       expect(existsSync(customCompletedPath)).toBe(true)
@@ -749,6 +762,315 @@ describe("resolveWatcher", () => {
       delete process.env.WATCHER_FILE
       if (existsSync(filePath)) unlinkSync(filePath)
       if (existsSync(completedPath)) unlinkSync(completedPath)
+    }
+  })
+
+  // -- Trackdown watcher (built-in) --
+
+  test("built-in mode: resolves 'trackdown' and reads markdown cards from watch column", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const boardRoot = ".tmp/trackdown-board-fetch"
+    const watchColumn = `${boardRoot}/todo`
+    const doneColumn = `${boardRoot}/done`
+    mkdirSync(watchColumn, { recursive: true })
+    mkdirSync(doneColumn, { recursive: true })
+
+    writeFileSync(`${watchColumn}/alpha.md`, "# Alpha\n\nDo alpha")
+    writeFileSync(`${watchColumn}/beta.md`, "# Beta\n\nDo beta")
+    writeFileSync(`${watchColumn}/ignore.txt`, "not a card")
+
+    process.env.TRACKDOWN_ROOT = boardRoot
+    process.env.TRACKDOWN_WATCH_COLUMN = "todo"
+    process.env.TRACKDOWN_DONE_COLUMN = "done"
+
+    try {
+      const watcher = await resolveWatcher({
+        watch: "trackdown",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+        taskTtl: 60_000,
+      })
+
+      const tasks: Task[] = []
+      for await (const task of watcher.fetch()) {
+        tasks.push(task)
+      }
+
+      expect(tasks).toHaveLength(2)
+      expect(tasks[0].title).toBe("alpha")
+      expect(tasks[0].description).toContain("Do alpha")
+      expect(tasks[0].id).toBe("alpha")
+      expect(tasks[1].title).toBe("beta")
+      expect(tasks[1].description).toContain("Do beta")
+    } finally {
+      delete process.env.TRACKDOWN_ROOT
+      delete process.env.TRACKDOWN_WATCH_COLUMN
+      delete process.env.TRACKDOWN_DONE_COLUMN
+      if (existsSync(boardRoot)) rmSync(boardRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("trackdown watcher complete() moves completed cards to done column", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const boardRoot = ".tmp/trackdown-board-put"
+    const watchColumn = `${boardRoot}/in-progress`
+    const doneColumn = `${boardRoot}/done`
+    mkdirSync(watchColumn, { recursive: true })
+
+    const cardPath = `${watchColumn}/card-1.md`
+    writeFileSync(cardPath, "# Card 1")
+
+    process.env.TRACKDOWN_ROOT = boardRoot
+    process.env.TRACKDOWN_WATCH_COLUMN = "in-progress"
+    process.env.TRACKDOWN_DONE_COLUMN = "done"
+
+    try {
+      const watcher = await resolveWatcher({
+        watch: "trackdown",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+        taskTtl: 60_000,
+      })
+
+      await watcher.complete!(
+        {
+          id: "card-1",
+          title: "card-1",
+          description: null,
+          url: null,
+          priority: null,
+          results: {
+            status: "complete",
+            dispatchId: "d1",
+            logDir: "/tmp/d1",
+            steps: [],
+          },
+        },
+        { summarize: async () => "", output: {} },
+      )
+
+      expect(existsSync(cardPath)).toBe(false)
+      expect(existsSync(`${doneColumn}/card-1.md`)).toBe(true)
+    } finally {
+      delete process.env.TRACKDOWN_ROOT
+      delete process.env.TRACKDOWN_WATCH_COLUMN
+      delete process.env.TRACKDOWN_DONE_COLUMN
+      if (existsSync(boardRoot)) rmSync(boardRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("trackdown watcher complete() does not move cards when dispatch fails", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const boardRoot = ".tmp/trackdown-board-error"
+    const watchColumn = `${boardRoot}/todo`
+    mkdirSync(watchColumn, { recursive: true })
+
+    const cardPath = `${watchColumn}/card-2.md`
+    writeFileSync(cardPath, "# Card 2")
+
+    process.env.TRACKDOWN_ROOT = boardRoot
+    process.env.TRACKDOWN_WATCH_COLUMN = "todo"
+    process.env.TRACKDOWN_DONE_COLUMN = "done"
+
+    try {
+      const watcher = await resolveWatcher({
+        watch: "trackdown",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+        taskTtl: 60_000,
+      })
+
+      await watcher.complete!(
+        {
+          id: "card-2",
+          title: "card-2",
+          description: null,
+          url: null,
+          priority: null,
+          results: {
+            status: "error",
+            dispatchId: "d2",
+            logDir: "/tmp/d2",
+            steps: [],
+          },
+        },
+        { summarize: async () => "", output: {} },
+      )
+
+      expect(existsSync(cardPath)).toBe(true)
+      expect(existsSync(`${boardRoot}/done/card-2.md`)).toBe(false)
+    } finally {
+      delete process.env.TRACKDOWN_ROOT
+      delete process.env.TRACKDOWN_WATCH_COLUMN
+      delete process.env.TRACKDOWN_DONE_COLUMN
+      if (existsSync(boardRoot)) rmSync(boardRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("trackdown watcher update() moves cards to active column when TRACKDOWN_ACTIVE_COLUMN is set", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const boardRoot = ".tmp/trackdown-board-active"
+    const watchColumn = `${boardRoot}/todo`
+    const activeColumn = `${boardRoot}/in-progress`
+    mkdirSync(watchColumn, { recursive: true })
+
+    const cardPath = `${watchColumn}/card-3.md`
+    writeFileSync(cardPath, "# Card 3")
+
+    process.env.TRACKDOWN_ROOT = boardRoot
+    process.env.TRACKDOWN_WATCH_COLUMN = "todo"
+    process.env.TRACKDOWN_DONE_COLUMN = "done"
+    process.env.TRACKDOWN_ACTIVE_COLUMN = "in-progress"
+
+    try {
+      const watcher = await resolveWatcher({
+        watch: "trackdown",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+        taskTtl: 60_000,
+      })
+
+      const task: Task = {
+        id: "card-3",
+        title: "card-3",
+        description: null,
+        url: null,
+        priority: null,
+      }
+
+      await watcher.update!(task, {
+        dispatchId: "d3",
+        logDir: "/tmp/logs/d3",
+      })
+
+      expect(existsSync(cardPath)).toBe(false)
+      expect(existsSync(`${activeColumn}/card-3.md`)).toBe(true)
+      expect(task.id).toBe("card-3")
+      const updated = readFileSync(`${activeColumn}/card-3.md`, "utf-8")
+      expect(updated.startsWith("---\nlogs: \"/tmp/logs/d3/*.log\"\n---\n")).toBe(true)
+    } finally {
+      delete process.env.TRACKDOWN_ROOT
+      delete process.env.TRACKDOWN_WATCH_COLUMN
+      delete process.env.TRACKDOWN_DONE_COLUMN
+      delete process.env.TRACKDOWN_ACTIVE_COLUMN
+      if (existsSync(boardRoot)) rmSync(boardRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("trackdown watcher update() is a no-op when TRACKDOWN_ACTIVE_COLUMN is unset", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const boardRoot = ".tmp/trackdown-board-active-unset"
+    const watchColumn = `${boardRoot}/todo`
+    mkdirSync(watchColumn, { recursive: true })
+
+    const cardPath = `${watchColumn}/card-4.md`
+    writeFileSync(cardPath, "# Card 4")
+
+    process.env.TRACKDOWN_ROOT = boardRoot
+    process.env.TRACKDOWN_WATCH_COLUMN = "todo"
+    process.env.TRACKDOWN_DONE_COLUMN = "done"
+    delete process.env.TRACKDOWN_ACTIVE_COLUMN
+
+    try {
+      const watcher = await resolveWatcher({
+        watch: "trackdown",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+        taskTtl: 60_000,
+      })
+
+      const task: Task = {
+        id: "card-4",
+        title: "card-4",
+        description: null,
+        url: null,
+        priority: null,
+      }
+
+      await watcher.update?.(task, {
+        dispatchId: "d4",
+        logDir: "/tmp/logs/d4",
+      })
+
+      expect(existsSync(cardPath)).toBe(true)
+      expect(task.id).toBe("card-4")
+      const updated = readFileSync(cardPath, "utf-8")
+      expect(updated.startsWith("---\nlogs: \"/tmp/logs/d4/*.log\"\n---\n")).toBe(true)
+    } finally {
+      delete process.env.TRACKDOWN_ROOT
+      delete process.env.TRACKDOWN_WATCH_COLUMN
+      delete process.env.TRACKDOWN_DONE_COLUMN
+      delete process.env.TRACKDOWN_ACTIVE_COLUMN
+      if (existsSync(boardRoot)) rmSync(boardRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("trackdown watcher update() replaces existing logs frontmatter", async () => {
+    mkdirSync(".tmp", { recursive: true })
+    const boardRoot = ".tmp/trackdown-board-frontmatter"
+    const watchColumn = `${boardRoot}/todo`
+    mkdirSync(watchColumn, { recursive: true })
+
+    const cardPath = `${watchColumn}/card-5.md`
+    writeFileSync(
+      cardPath,
+      "---\nstatus: open\nlogs: \"old/path\"\n---\n# Card 5\n",
+    )
+
+    process.env.TRACKDOWN_ROOT = boardRoot
+    process.env.TRACKDOWN_WATCH_COLUMN = "todo"
+    process.env.TRACKDOWN_DONE_COLUMN = "done"
+    delete process.env.TRACKDOWN_ACTIVE_COLUMN
+
+    try {
+      const watcher = await resolveWatcher({
+        watch: "trackdown",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+        taskTtl: 60_000,
+      })
+
+      const task: Task = {
+        id: "card-5",
+        title: "card-5",
+        description: null,
+        url: null,
+        priority: null,
+      }
+
+      await watcher.update?.(task, {
+        dispatchId: "d5",
+        logDir: "/tmp/logs/d5",
+      })
+
+      const updated = readFileSync(cardPath, "utf-8")
+      expect(updated).toContain("status: open")
+      expect(updated).toContain("logs: \"/tmp/logs/d5/*.log\"")
+      expect(updated).not.toContain("logs: \"old/path\"")
+    } finally {
+      delete process.env.TRACKDOWN_ROOT
+      delete process.env.TRACKDOWN_WATCH_COLUMN
+      delete process.env.TRACKDOWN_DONE_COLUMN
+      delete process.env.TRACKDOWN_ACTIVE_COLUMN
+      if (existsSync(boardRoot)) rmSync(boardRoot, { recursive: true, force: true })
     }
   })
 })

@@ -101,6 +101,12 @@ set -euo pipefail
 
 WORKSPACE=".switchboard/workspaces/$TASK_IDENTIFIER"
 
+# Allow switchboard to run when git is unavailable or this is not a repository.
+if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "##switchboard:cwd=$SWITCHBOARD_PROJECT_ROOT"
+  exit 0
+fi
+
 # If the workspace directory already exists, assume a previous attempt
 # failed partway through. Reuse it and pick up where we left off.
 if [ -d "$WORKSPACE" ]; then
@@ -120,6 +126,8 @@ echo "##switchboard:cwd=$WORKSPACE"
 ```
 
 This default runs when no `.switchboard/commands/init.sh` exists in the project. It gives each task an isolated copy of the repository on its own branch, without a full clone. If the task was previously attempted (branch or workspace already exists), it reuses what is there so work can continue.
+
+If `git` is not installed or the project is not a git worktree, the default init script falls back to the project root by emitting `##switchboard:cwd=$SWITCHBOARD_PROJECT_ROOT`.
 
 To override the default, create a project-specific `.switchboard/commands/init.sh`. To opt out of workspace creation entirely (work in the project root), create an empty file:
 
@@ -143,6 +151,11 @@ set -euo pipefail
 # be running in the project root -- $(pwd) would point at the wrong place.
 WORKSPACE="$SWITCHBOARD_PROJECT_ROOT/.switchboard/workspaces/$TASK_IDENTIFIER"
 
+# No git cleanup is needed when git is unavailable or this is not a repository.
+if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  exit 0
+fi
+
 # If the workspace directory does not exist, init never got far enough to
 # create it (or it was never needed). Nothing to clean up.
 if [ ! -d "$WORKSPACE" ]; then
@@ -154,6 +167,8 @@ git worktree remove "$WORKSPACE"
 ```
 
 Same override rules apply. If the project provides `.switchboard/commands/teardown.sh`, it replaces the default. An empty file opts out of cleanup.
+
+When running without git, the default teardown script exits successfully without attempting cleanup.
 
 ## Task Data
 
@@ -442,7 +457,7 @@ This works because:
 
 - **Lock store has no memory of completed tasks.** When a dispatch finishes, the lock is released. There is no "completed" state. Re-pickup is controlled entirely by whether the watcher re-yields the task.
 - **Init reuses the existing branch.** The default `init.sh` checks for an existing `switchboard/{identifier}` branch and creates a worktree from it rather than starting fresh. The agent picks up where the previous work left off.
-- **Teardown handles existing PRs.** The default `teardown.md` instructs the agent to check for an existing PR on the branch before creating one. If a PR exists, the agent pushes new commits and updates the PR description. If not, it creates a new PR.
+- **Teardown degrades gracefully by host/tooling.** The default `teardown.md` instructs the agent to commit work first, then try to push. If push succeeds and GitHub tooling is available, it updates or creates a PR. If push or PR tooling is unavailable, it keeps the branch locally without failing teardown.
 - **The watcher controls re-yield.** For Jira, the JQL query determines which tasks are candidates. If a reviewer moves a ticket back to "To-do", the JQL matches it again. For the file watcher, the task would need to be removed from the completed file or re-added to the source file.
 - **Fresh task description.** The watcher fetches the task from the source on each poll, so the agent receives the updated description with reviewer feedback.
 
@@ -502,24 +517,27 @@ project.
 #!/bin/bash
 set -euo pipefail
 
-# Push the branch
-git push -u origin "switchboard/$TASK_IDENTIFIER"
-
-# Open a PR if one doesn't already exist for this branch.
-# If a PR exists (e.g., from a previous dispatch), the push above
-# already updated it with the new commits.
-if ! gh pr view "switchboard/$TASK_IDENTIFIER" --json url >/dev/null 2>&1; then
-  gh pr create \
-    --title "$TASK_IDENTIFIER: $TASK_TITLE" \
-    --body "Automated PR for $TASK_URL" \
-    --base main
+# Push the branch when possible. If there is no remote (or auth/policy blocks
+# push), keep the committed work on the local branch and continue.
+if git push -u origin "switchboard/$TASK_IDENTIFIER"; then
+  # If this repo uses GitHub and gh is available, open/update a PR.
+  if command -v gh >/dev/null 2>&1; then
+    if ! gh pr view "switchboard/$TASK_IDENTIFIER" --json url >/dev/null 2>&1; then
+      gh pr create \
+        --title "$TASK_IDENTIFIER: $TASK_TITLE" \
+        --body "Automated PR for $TASK_URL" \
+        --base main
+    fi
+  fi
 fi
 
 # Clean up the worktree
 WORKSPACE="$SWITCHBOARD_PROJECT_ROOT/.switchboard/workspaces/$TASK_IDENTIFIER"
-cd "$SWITCHBOARD_PROJECT_ROOT"
-if [ -d "$WORKSPACE" ]; then
-  git worktree remove "$WORKSPACE"
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  cd "$SWITCHBOARD_PROJECT_ROOT"
+  if [ -d "$WORKSPACE" ]; then
+    git worktree remove "$WORKSPACE"
+  fi
 fi
 ```
 

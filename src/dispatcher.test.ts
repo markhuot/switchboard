@@ -251,10 +251,12 @@ describe("createDispatcher", () => {
 
   function makeConfig(overrides: Partial<SwitchboardConfig> = {}): SwitchboardConfig {
     return {
+      waitBetweenPolls: 30_000,
+      noTty: false,
+      taskTtl: 3_600_000,
       watch: "test",
       agent: "echo",
       dispatch: join(projectRoot, ".switchboard/commands/"),
-      pollInterval: 30_000,
       concurrency: 4,
       ...overrides,
     }
@@ -774,8 +776,8 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
   })
 
   test("uses default init.sh when no user-defined init.sh exists", async () => {
-    // Use a project root outside any git repo so the default init.sh
-    // (which runs `git worktree add`) genuinely fails.
+    // Use a project root outside any git repo so default init.sh
+    // falls back to working directly in the project root.
     const isolatedRoot = join("/tmp", `switchboard-test-${crypto.randomUUID().slice(0, 8)}`)
     const isolatedCommandsDir = join(isolatedRoot, ".switchboard/commands")
     mkdirSync(isolatedRoot, { recursive: true })
@@ -786,9 +788,40 @@ echo "SWITCHBOARD_WATCHER=$SWITCHBOARD_WATCHER" >> "${projectRoot}/env.log"
       const dispatch = createDispatcher({ config, projectRoot: isolatedRoot })
       const handle = dispatch(task, "a1b2c3d4")
 
-      // Default init.sh will fail because isolatedRoot isn't a git repo
-      await expect(handle.done).rejects.toThrow()
+      await expect(handle.done).resolves.toEqual([
+        { name: "init.sh", exitCode: 0 },
+        { name: "work.md", exitCode: 0 },
+        { name: "teardown.md", exitCode: 0 },
+        { name: "teardown.sh", exitCode: 0 },
+      ])
+      expect(handle.output.cwd).toBe(isolatedRoot)
     } finally {
+      rmSync(isolatedRoot, { recursive: true, force: true })
+    }
+  })
+
+  test("uses default init and teardown when git command is unavailable", async () => {
+    const isolatedRoot = join("/tmp", `switchboard-test-${crypto.randomUUID().slice(0, 8)}`)
+    const isolatedCommandsDir = join(isolatedRoot, ".switchboard/commands")
+    mkdirSync(isolatedRoot, { recursive: true })
+
+    const originalPath = process.env.PATH
+    process.env.PATH = ""
+
+    try {
+      const config = makeConfig({ dispatch: isolatedCommandsDir })
+      const dispatch = createDispatcher({ config, projectRoot: isolatedRoot })
+      const handle = dispatch(task, "a1b2c3d4")
+
+      await expect(handle.done).resolves.toEqual([
+        { name: "init.sh", exitCode: 0 },
+        { name: "work.md", exitCode: 0 },
+        { name: "teardown.md", exitCode: 0 },
+        { name: "teardown.sh", exitCode: 0 },
+      ])
+      expect(handle.output.cwd).toBe(isolatedRoot)
+    } finally {
+      process.env.PATH = originalPath
       rmSync(isolatedRoot, { recursive: true, force: true })
     }
   })

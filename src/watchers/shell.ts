@@ -1,5 +1,22 @@
 import type { SwitchboardConfig, Watcher, Task } from "../types"
 
+export function help(): string {
+  return `Watcher: shell
+
+Runs a shell command on each poll tick and reads tasks from stdout.
+
+Usage:
+  --watch="$ <command>"
+
+Output formats:
+  - JSON array of task objects
+  - NDJSON (one task object per line)
+
+Notes:
+  - Each task requires id and title
+  - Command timeout is 30 seconds`
+}
+
 /**
  * Normalize a raw object from shell output into a Task, or null if invalid.
  */

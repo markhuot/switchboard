@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test"
-import { parseDuration, parseArgs, formatElapsed } from "./config"
+import { parseDuration, parseArgs, formatElapsed, parseHelpAction, printMainHelp } from "./config"
 import createShellWatcher from "./watchers/shell"
 import { resolveWatcher } from "./watcher"
 import { createOrchestrator } from "./orchestrator"
@@ -8,6 +8,7 @@ import createJiraWatcher, {
   buildDescription,
   normalize,
 } from "./watchers/jira"
+import { BUILTIN_WATCHERS, getWatcherHelp } from "./watcher"
 import type { Task, Watcher, SwitchboardConfig, Dispatcher, StepResult } from "./types"
 import os from "os"
 import { mkdirSync, writeFileSync } from "fs"
@@ -148,6 +149,110 @@ describe("parseArgs", () => {
   test("defaults taskTtl to 1h", () => {
     const config = parseArgs(["bun", "script.ts", "--watch=jira", "--agent=opencode"])
     expect(config.taskTtl).toBe(3_600_000)
+  })
+
+  test("help lists all native built-in watchers", () => {
+    const output: string[] = []
+    const originalLog = console.log
+    console.log = mock((message: string) => {
+      output.push(String(message))
+    }) as any
+
+    const originalExit = process.exit
+    process.exit = mock((code?: number) => {
+      throw new Error(`process.exit:${code ?? ""}`)
+    }) as any
+
+    try {
+      parseArgs(["bun", "script.ts", "--help"])
+    } catch (err: any) {
+      expect(err.message).toBe("process.exit:0")
+    } finally {
+      console.log = originalLog
+      process.exit = originalExit
+    }
+
+    const helpText = output.join("\n")
+    expect(helpText).toContain("Built-in:")
+    for (const watcher of BUILTIN_WATCHERS) {
+      expect(helpText).toContain(watcher)
+    }
+  })
+
+  test("help subcommand parses as main help", () => {
+    expect(parseHelpAction(["bun", "script.ts", "help"])).toEqual({ kind: "main" })
+  })
+
+  test("help watcher subcommand parses watcher name", () => {
+    expect(parseHelpAction(["bun", "script.ts", "help", "watcher", "jira"])).toEqual({
+      kind: "watcher",
+      watcher: "jira",
+    })
+  })
+
+  test("help watcher subcommand supports shell watcher syntax", () => {
+    expect(parseHelpAction(["bun", "script.ts", "help", "watcher", "$ echo hi"])).toEqual({
+      kind: "watcher",
+      watcher: "$ echo hi",
+    })
+  })
+
+  test("help watcher subcommand requires watcher name", () => {
+    expect(() => parseHelpAction(["bun", "script.ts", "help", "watcher"])).toThrow(
+      "Missing watcher name"
+    )
+  })
+
+  test("help subcommand output matches --help output", () => {
+    const parseArgsOutput: string[] = []
+    const printMainHelpOutput: string[] = []
+
+    const originalLog = console.log
+    const originalExit = process.exit
+
+    console.log = mock((message: string) => {
+      parseArgsOutput.push(String(message))
+    }) as any
+    process.exit = mock((code?: number) => {
+      throw new Error(`process.exit:${code ?? ""}`)
+    }) as any
+
+    try {
+      parseArgs(["bun", "script.ts", "--help"])
+    } catch (err: any) {
+      expect(err.message).toBe("process.exit:0")
+    }
+
+    console.log = mock((message: string) => {
+      printMainHelpOutput.push(String(message))
+    }) as any
+    printMainHelp()
+
+    console.log = originalLog
+    process.exit = originalExit
+
+    expect(printMainHelpOutput.join("\n")).toBe(parseArgsOutput.join("\n"))
+  })
+
+  test("watcher help: jira includes required env vars", async () => {
+    const help = await getWatcherHelp("jira")
+    expect(help).toContain("JIRA_BASE_URL")
+    expect(help).toContain("JIRA_TOKEN")
+    expect(help).toContain("JIRA_WATCH_COLUMN")
+    expect(help).toContain("JIRA_DOING_COLUMN")
+    expect(help).toContain("JIRA_DONE_COLUMN")
+  })
+
+  test("watcher help: shell mode resolves to shell help", async () => {
+    const help = await getWatcherHelp('$ echo "[]"')
+    expect(help).toContain("Watcher: shell")
+    expect(help).toContain("--watch=\"$ <command>\"")
+  })
+
+  test("watcher help: unknown built-in throws", async () => {
+    await expect(getWatcherHelp("not-a-watcher")).rejects.toThrow(
+      'Unknown built-in watcher: "not-a-watcher"'
+    )
   })
 
 })
@@ -316,6 +421,9 @@ describe("resolveWatcher", () => {
             yield { id: "mod-1", title: "Module task", description: null, url: null, priority: null }
           },
         }
+      }
+      export function help() {
+        return "test watcher help"
       }`
     )
 
@@ -340,7 +448,9 @@ describe("resolveWatcher", () => {
     // The jira watcher validates env vars at construction time
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     const originalFetch = globalThis.fetch
     globalThis.fetch = mock(async () =>
@@ -368,7 +478,9 @@ describe("resolveWatcher", () => {
       globalThis.fetch = originalFetch
       delete process.env.JIRA_BASE_URL
       delete process.env.JIRA_TOKEN
-      delete process.env.JIRA_JQL
+      delete process.env.JIRA_WATCH_COLUMN
+      delete process.env.JIRA_DOING_COLUMN
+      delete process.env.JIRA_DONE_COLUMN
     }
   })
 })
@@ -684,7 +796,7 @@ describe("createJiraWatcher", () => {
   const savedEnv: Record<string, string | undefined> = {}
 
   beforeEach(() => {
-    for (const key of ["JIRA_BASE_URL", "JIRA_TOKEN", "JIRA_JQL"]) {
+    for (const key of ["JIRA_BASE_URL", "JIRA_TOKEN", "JIRA_WATCH_COLUMN", "JIRA_DOING_COLUMN", "JIRA_DONE_COLUMN", "JIRA_JQL"]) {
       savedEnv[key] = process.env[key]
     }
   })
@@ -702,7 +814,9 @@ describe("createJiraWatcher", () => {
   test("throws when JIRA_BASE_URL is missing", () => {
     delete process.env.JIRA_BASE_URL
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     expect(() =>
       createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
@@ -712,27 +826,57 @@ describe("createJiraWatcher", () => {
   test("throws when JIRA_TOKEN is missing", () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     delete process.env.JIRA_TOKEN
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     expect(() =>
       createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
     ).toThrow("Missing required environment variable: JIRA_TOKEN")
   })
 
-  test("throws when JIRA_JQL is missing", () => {
+  test("throws when JIRA_WATCH_COLUMN is missing", () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    delete process.env.JIRA_JQL
+    delete process.env.JIRA_WATCH_COLUMN
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     expect(() =>
       createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
-    ).toThrow("Missing required environment variable: JIRA_JQL")
+    ).toThrow("Missing required environment variable: JIRA_WATCH_COLUMN")
+  })
+
+  test("throws when JIRA_DOING_COLUMN is missing", () => {
+    process.env.JIRA_BASE_URL = "https://jira.example.com"
+    process.env.JIRA_TOKEN = "test-token"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    delete process.env.JIRA_DOING_COLUMN
+    process.env.JIRA_DONE_COLUMN = "Done"
+
+    expect(() =>
+      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
+    ).toThrow("Missing required environment variable: JIRA_DOING_COLUMN")
+  })
+
+  test("throws when JIRA_DONE_COLUMN is missing", () => {
+    process.env.JIRA_BASE_URL = "https://jira.example.com"
+    process.env.JIRA_TOKEN = "test-token"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    delete process.env.JIRA_DONE_COLUMN
+
+    expect(() =>
+      createJiraWatcher({ watch: "jira", agent: "test", dispatch: ".switchboard/commands/", waitBetweenPolls: 30_000, concurrency: 4, noTty: false })
+    ).toThrow("Missing required environment variable: JIRA_DONE_COLUMN")
   })
 
   test("creates watcher successfully when all env vars are set", () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     const watcher = createJiraWatcher({
       watch: "jira",
@@ -749,7 +893,9 @@ describe("createJiraWatcher", () => {
   test("fetch yields tasks from a single page", async () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     const mockResponse = {
       startAt: 0,
@@ -835,7 +981,9 @@ describe("createJiraWatcher", () => {
   test("fetch paginates through multiple pages", async () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     const page1 = {
       startAt: 0,
@@ -909,7 +1057,9 @@ describe("createJiraWatcher", () => {
   test("fetch throws on non-200 response", async () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     const originalFetch = globalThis.fetch
     globalThis.fetch = mock(async () =>
@@ -940,7 +1090,9 @@ describe("createJiraWatcher", () => {
   test("fetch stops when issues array is empty", async () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "test-token"
-    process.env.JIRA_JQL = "project = TEST"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
 
     const originalFetch = globalThis.fetch
     globalThis.fetch = mock(async () =>
@@ -979,6 +1131,9 @@ describe("createJiraWatcher", () => {
   test("fetch sends correct auth header and request body", async () => {
     process.env.JIRA_BASE_URL = "https://jira.example.com"
     process.env.JIRA_TOKEN = "my-secret-token"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
     process.env.JIRA_JQL = "project = MYPROJ ORDER BY priority ASC"
 
     let capturedUrl: string = ""
@@ -1024,6 +1179,162 @@ describe("createJiraWatcher", () => {
       expect(body.startAt).toBe(0)
       expect(body.maxResults).toBe(10)
       expect(body.fields).toEqual(["summary", "description", "priority", "comment"])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test("fetch defaults JQL to watch column when JIRA_JQL is unset", async () => {
+    process.env.JIRA_BASE_URL = "https://jira.example.com"
+    process.env.JIRA_TOKEN = "test-token"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Done"
+    delete process.env.JIRA_JQL
+
+    let capturedInit: any = {}
+
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mock(async (_url: string, init: any) => {
+      capturedInit = init
+      return new Response(
+        JSON.stringify({
+          startAt: 0,
+          maxResults: 10,
+          total: 0,
+          issues: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    }) as any
+
+    try {
+      const watcher = createJiraWatcher({
+        watch: "jira",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      for await (const _ of watcher.fetch()) {
+        // consume generator
+      }
+
+      const body = JSON.parse(capturedInit.body)
+      expect(body.jql).toBe('status = "Backlog" ORDER BY priority ASC, created ASC')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test("update transitions issue to JIRA_DOING_COLUMN", async () => {
+    process.env.JIRA_BASE_URL = "https://jira.example.com"
+    process.env.JIRA_TOKEN = "test-token"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "In Progress"
+    process.env.JIRA_DONE_COLUMN = "Done"
+
+    const calls: Array<{ url: string; init: any }> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mock(async (url: string, init: any) => {
+      calls.push({ url, init })
+
+      if (init.method === "GET") {
+        return new Response(
+          JSON.stringify({ transitions: [{ id: "21", name: "In Progress" }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      }
+
+      return new Response(null, { status: 204 })
+    }) as any
+
+    try {
+      const watcher = createJiraWatcher({
+        watch: "jira",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      await watcher.update?.(
+        { id: "10001", title: "Issue 10001", description: null, url: null, priority: null },
+        { dispatchId: "d1", logDir: "/tmp/logs/d1" },
+      )
+
+      expect(calls).toHaveLength(2)
+      expect(calls[0].url).toBe("https://jira.example.com/rest/api/2/issue/10001/transitions")
+      expect(calls[0].init.method).toBe("GET")
+      expect(calls[1].init.method).toBe("POST")
+      expect(JSON.parse(calls[1].init.body)).toEqual({ transition: { id: "21" } })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test("complete transitions successful issues to JIRA_DONE_COLUMN", async () => {
+    process.env.JIRA_BASE_URL = "https://jira.example.com"
+    process.env.JIRA_TOKEN = "test-token"
+    process.env.JIRA_WATCH_COLUMN = "Backlog"
+    process.env.JIRA_DOING_COLUMN = "Doing"
+    process.env.JIRA_DONE_COLUMN = "Ready for QA"
+
+    const calls: Array<{ url: string; init: any }> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mock(async (url: string, init: any) => {
+      calls.push({ url, init })
+
+      if (url.endsWith("/transitions") && init.method === "GET") {
+        return new Response(
+          JSON.stringify({ transitions: [{ id: "31", name: "Ready for QA" }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      }
+
+      if (url.endsWith("/transitions") && init.method === "POST") {
+        return new Response(null, { status: 204 })
+      }
+
+      return new Response(null, { status: 201 })
+    }) as any
+
+    try {
+      const watcher = createJiraWatcher({
+        watch: "jira",
+        agent: "test",
+        dispatch: ".switchboard/commands/",
+        waitBetweenPolls: 30_000,
+        concurrency: 4,
+        noTty: false,
+      })
+
+      await watcher.complete?.(
+        {
+          id: "10002",
+          title: "Issue 10002",
+          description: null,
+          url: null,
+          priority: null,
+          results: {
+            status: "complete",
+            dispatchId: "d2",
+            logDir: "/tmp/does-not-exist",
+            steps: [],
+          },
+        },
+        { summarize: async () => "done", output: {} },
+      )
+
+      expect(calls[0].url).toBe("https://jira.example.com/rest/api/2/issue/10002/transitions")
+      expect(calls[0].init.method).toBe("GET")
+      expect(calls[1].init.method).toBe("POST")
+      expect(JSON.parse(calls[1].init.body)).toEqual({ transition: { id: "31" } })
+      expect(calls[2].url).toBe("https://jira.example.com/rest/api/2/issue/10002/comment")
+      expect(calls[2].init.method).toBe("POST")
     } finally {
       globalThis.fetch = originalFetch
     }
