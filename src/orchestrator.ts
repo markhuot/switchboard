@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs"
 import { dirname, join } from "path"
 import type {
   CompleteContext,
@@ -11,7 +11,7 @@ import type {
   UpdateContext,
   Watcher,
 } from "./types"
-import { generateDispatchId, normalizeWatcherName } from "./dispatcher"
+import { DEFAULT_AGENT_SH, generateDispatchId, normalizeWatcherName } from "./dispatcher"
 
 export type TaskStatus = "in_progress" | "complete" | "error"
 
@@ -229,14 +229,19 @@ export function createOrchestrator(
           ].join("\n"),
         )
 
-        // Invoke the agent via the same agent.sh mechanism
-        const agentScript = join(
-          process.cwd(),
-          config.dispatch,
-          "agent.sh",
-        )
+        // Resolve project-specific agent.sh with fallback to built-in default.
+        const projectAgentScriptPath = join(process.cwd(), config.dispatch, "agent.sh")
+        const agentScript = existsSync(projectAgentScriptPath)
+          ? readFileSync(projectAgentScriptPath, "utf-8")
+          : DEFAULT_AGENT_SH
+        const agentScriptSource = existsSync(projectAgentScriptPath)
+          ? projectAgentScriptPath
+          : "default"
+        const agentScriptPath = join(promptDir, "agent.sh")
+        writeFileSync(agentScriptPath, agentScript)
+
         const proc = Bun.spawn(
-          ["bash", "-lc", `bash "${agentScript}" "${config.agent}" "${promptPath}"`],
+          ["bash", "-lc", `bash "${agentScriptPath}" "${config.agent}" "${promptPath}"`],
           { cwd: process.cwd(), stdin: "ignore", stdout: "pipe", stderr: "pipe" },
         )
 
@@ -253,6 +258,7 @@ export function createOrchestrator(
           [
             `[${timestamp}] summarize prompt=${promptPath}`,
             `[${timestamp}] summarize input=${inputPath}`,
+            `[${timestamp}] summarize agent_script=${agentScriptSource}`,
             `[${timestamp}] summarize exit_code=${exitCode}`,
             `[${timestamp}] summarize stdout:`,
             stdout || "(empty)",
